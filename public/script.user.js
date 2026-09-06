@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         IXL Auto Answerer
+// @name         IXL Hub
 // @namespace    http://tampermonkey.net/
-// @version      16.26
-// @description  Auto answer IXL with server-validated license key, draggable panel, visual cube counting via DOM
+// @version      17.0
+// @description  Hub with multiple cheats for IXL
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -16,25 +16,32 @@
 
 (function() {
     'use strict';
-    if (window.__ixlAutoAnswererLoaded) return;
-    window.__ixlAutoAnswererLoaded = true;
+    if (window.__ixlHubLoaded) return;
+    window.__ixlHubLoaded = true;
 
     const GROQ_API_KEY = "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";
     const MODEL = "groq/compound";
     const SERVER = "https://ixl-key-server.onrender.com";
-    const VERSION = "16.26";
+    const VERSION = "17.0";
 
     let licenseKey = GM_getValue('license_key', '');
+    let currentCheat = null; // name of active cheat module
     let running = false;
     let questionCount = 0;
     let sameQuestionStreak = 0;
     let lastQuestion = '';
     let updateRequired = false;
 
+    // ========== STYLES ==========
     GM_addStyle(`
         #ixl-loader { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 999998; background: #2c3e50; color: #fff; padding: 20px 30px; border-radius: 10px; font-family: Arial; box-shadow: 0 0 20px rgba(0,0,0,0.5); width: 400px; max-width: 90%; display: flex; align-items: center; gap: 10px; transition: all 0.5s ease; }
         #ixl-loader input { flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 5px; font-size: 14px; }
         #ixl-loader button { padding: 10px 20px; background: #3498db; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        #ixl-hub { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 999999; background: #2c3e50; color: #fff; padding: 25px; border-radius: 10px; font-family: Arial; box-shadow: 0 0 20px rgba(0,0,0,0.5); width: 300px; display: none; }
+        #ixl-hub.show { display: block; }
+        #ixl-hub h2 { margin: 0 0 15px; text-align: center; color: #3498db; }
+        .hub-btn { display: block; width: 100%; padding: 12px; margin-bottom: 10px; background: #3498db; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 16px; }
+        .hub-btn:hover { background: #2980b9; }
         #ixl-panel { position: fixed; top: 10px; right: 10px; z-index: 999999; background: #2c3e50; color: #fff; padding: 15px; border-radius: 10px; font-family: Arial; width: 320px; box-shadow: 0 0 20px rgba(0,0,0,0.5); display: none; }
         #ixl-panel.show { display: block; }
         #ixl-status { text-align: center; padding: 5px; background: #c0392b; border-radius: 3px; margin-bottom: 8px; font-weight: bold; }
@@ -49,16 +56,29 @@
         #update-overlay button { margin: 10px; padding: 10px 20px; background: #e74c3c; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }
     `);
 
+    // ========== LOADER ==========
     const loader = document.createElement('div');
     loader.id = 'ixl-loader';
     loader.innerHTML = `<input type="text" id="ixl-key" placeholder="Enter License Key"><button id="ixl-activate" type="button">Activate</button>`;
     document.body.appendChild(loader);
     if (licenseKey) document.getElementById('ixl-key').value = licenseKey;
 
+    // ========== HUB ==========
+    const hub = document.createElement('div');
+    hub.id = 'ixl-hub';
+    hub.innerHTML = `
+        <h2>Choose Your Cheat</h2>
+        <button class="hub-btn" data-cheat="math">Math Auto Answerer</button>
+        <button class="hub-btn" data-cheat="cube">Cube Counter</button>
+        <button class="hub-btn" data-cheat="placeholder">Placeholder</button>
+    `;
+    document.body.appendChild(hub);
+
+    // ========== MAIN PANEL ==========
     const panel = document.createElement('div');
     panel.id = 'ixl-panel';
     panel.innerHTML = `
-        <div class="drag-handle"><h3>IXL Auto Answerer</h3><span>⠿</span></div>
+        <div class="drag-handle"><h3>IXL Cheat</h3><span>⠿</span></div>
         <div id="update-banner">Update available – click to install</div>
         <div id="ixl-status">Status: OFF</div>
         <button id="ixl-toggle" type="button">Start</button>
@@ -66,6 +86,7 @@
     `;
     document.body.appendChild(panel);
 
+    // Dragging panel
     const dragHandle = panel.querySelector('.drag-handle');
     let isDragging = false, dragOffsetX = 0, dragOffsetY = 0;
     dragHandle.addEventListener('pointerdown', e => {
@@ -89,9 +110,10 @@
         const d = document.getElementById('ixl-log');
         d.textContent += '\n[' + new Date().toLocaleTimeString() + '] ' + msg;
         d.scrollTop = d.scrollHeight;
-        console.log('[IXL] ' + msg);
+        console.log('[IXL Hub] ' + msg);
     }
 
+    // ========== UPDATE CHECK ==========
     async function checkForUpdates() {
         try {
             const response = await new Promise((resolve, reject) => {
@@ -119,7 +141,7 @@
         overlay.innerHTML = `
             <div class="box">
                 <h2>Update Required</h2>
-                <p>A new version of the IXL Auto Answerer is available. You must update to continue.</p>
+                <p>A new version of the IXL Hub is available. You must update to continue.</p>
                 <button id="update-now-btn">Update Now</button>
                 <button id="reload-after-update-btn">I've Updated – Reload</button>
             </div>
@@ -136,6 +158,7 @@
 
     setInterval(checkForUpdates, 5 * 60 * 1000);
 
+    // ========== LICENSE ==========
     async function validateKey(key) {
         if (!key) { alert('Please enter a license key.'); return false; }
         try {
@@ -154,19 +177,61 @@
     document.getElementById('ixl-activate').addEventListener('click', async () => {
         if (await validateKey(document.getElementById('ixl-key').value.trim())) {
             loader.style.opacity = '0';
-            setTimeout(() => { loader.style.display = 'none'; panel.classList.add('show'); log('Activated'); checkForUpdates(); }, 300);
+            setTimeout(() => {
+                loader.style.display = 'none';
+                hub.classList.add('show');
+            }, 300);
         }
     });
 
-    function solveBasicMath(q) {
-        const m = q.match(/^(Add|Subtract|Multiply|Divide|Evaluate)\.?\s+([\d,]+)\s*([+\-*/])\s*([\d,]+)/i);
-        if (!m) return null;
-        const a = parseFloat(m[2].replace(/,/g,'')), b = parseFloat(m[4].replace(/,/g,''));
-        let r;
-        switch(m[3]) { case '+': r=a+b; break; case '-': r=a-b; break; case '*': r=a*b; break; case '/': r=a/b; break; default: return null; }
-        return r % 1 === 0 ? r.toString() : r.toFixed(2).replace(/\.?0+$/,'');
+    // ========== HUB BUTTON HANDLERS ==========
+    hub.addEventListener('click', function(e) {
+        const btn = e.target.closest('.hub-btn');
+        if (!btn) return;
+        const cheat = btn.dataset.cheat;
+        if (cheat === 'math') {
+            startMathAutoAnswerer();
+        } else if (cheat === 'cube') {
+            startCubeCounter();
+        } else {
+            alert('Placeholder cheat selected');
+        }
+        hub.classList.remove('show');
+    });
+
+    function showPanel(title) {
+        panel.querySelector('.drag-handle h3').textContent = title;
+        panel.classList.add('show');
+        document.getElementById('ixl-status').textContent = 'Status: OFF';
+        document.getElementById('ixl-status').className = '';
+        document.getElementById('ixl-toggle').disabled = false;
+        document.getElementById('ixl-log').textContent = 'Ready.';
     }
 
+    // ========== MATH AUTO ANSWERER (existing logic) ==========
+    function startMathAutoAnswerer() {
+        currentCheat = 'math';
+        showPanel('Math Auto Answerer');
+        // reset state
+        running = false;
+        questionCount = 0;
+        sameQuestionStreak = 0;
+        lastQuestion = '';
+        log('Math Auto Answerer activated. Press Start.');
+    }
+
+    // ========== CUBE COUNTER ==========
+    function startCubeCounter() {
+        currentCheat = 'cube';
+        showPanel('Cube Counter');
+        running = false;
+        questionCount = 0;
+        sameQuestionStreak = 0;
+        lastQuestion = '';
+        log('Cube Counter activated. Press Start.');
+    }
+
+    // ========== COMMON HELPERS ==========
     function getAllDocuments() {
         const docs = [document];
         const iframes = document.querySelectorAll('iframe');
@@ -174,6 +239,12 @@
             try { if (iframe.contentDocument) docs.push(iframe.contentDocument); } catch(e) {}
         }
         return docs;
+    }
+
+    function normalizeMinus(s) { return s.replace(/[\u2013\u2014\u2212]/g, '-'); }
+    function extractNumbers(text) {
+        const normalized = normalizeMinus(text);
+        return (normalized.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
     }
 
     function getQuestion() {
@@ -196,18 +267,12 @@
         return document.body;
     }
 
-    function normalizeMinus(s) { return s.replace(/[\u2013\u2014\u2212]/g, '-'); }
-    function extractNumbers(text) {
-        const normalized = normalizeMinus(text);
-        return (normalized.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
-    }
-
     function getAnswerChoices() {
         const area = getQuestionArea();
         const choices = new Set();
         const all = area.querySelectorAll('div, span, p, li, button, label, [role="radio"], input[type="radio"]');
         for (const el of all) {
-            if (el.offsetParent === null || el.closest('#ixl-panel') || el.closest('#ixl-loader')) continue;
+            if (el.offsetParent === null || el.closest('#ixl-panel') || el.closest('#ixl-hub') || el.closest('#ixl-loader')) continue;
             let text = normalizeMinus((el.innerText || el.textContent || '').trim());
             if (el.tagName === 'INPUT' && el.type === 'radio') text = normalizeMinus(el.value || el.getAttribute('aria-label') || '');
             if (!text || text.length > 200) continue;
@@ -230,7 +295,7 @@
         const ansNums = extractNumbers(ans);
         const all = area.querySelectorAll('div, span, p, li, button, label, [role="radio"], input[type="radio"]');
         for (const el of all) {
-            if (el.offsetParent === null || el.closest('#ixl-panel') || el.closest('#ixl-loader')) continue;
+            if (el.offsetParent === null || el.closest('#ixl-panel') || el.closest('#ixl-hub') || el.closest('#ixl-loader')) continue;
             let text = normalizeMinus((el.innerText || el.textContent || '').trim());
             if (el.tagName === 'INPUT' && el.type === 'radio') text = normalizeMinus(el.value || el.getAttribute('aria-label') || '');
             if (!text) continue;
@@ -299,6 +364,8 @@
             for (const b of buttons) {
                 if (!b.offsetParent) continue;
                 const text = (b.innerText || b.textContent || b.getAttribute('aria-label') || '').toLowerCase();
+                // Exclude "skip to content" and similar accessibility links
+                if (/skip to content|accessibility|jump to/i.test(text)) continue;
                 if (/next|skip|continue|forward|arrow|»|>/.test(text)) {
                     log(`Clicking skip/next: ${text}`);
                     b.click();
@@ -322,26 +389,13 @@
         return /shown|cube|picture|graph|figure|tens|ones|base[- ]ten|count the/i.test(questionText);
     }
 
-    // === NEW: Count cubes from DOM ===
+    // ========== CUBE COUNTER FUNCTION ==========
     function countCubesFromDOM() {
         const area = getQuestionArea();
-        // Try to find elements that represent cubes/units
-        const cubeSelectors = [
-            '[class*="cube"]',
-            '[class*="unit"]',
-            '[class*="one"]',
-            '[class*="block"]',
-            '[class*="rod"]',  // a rod = 10 cubes, but we count individual cubes? we need total value, not count elements.
-            '[class*="ten"]',
-            '[class*="hundred"]',
-            '[class*="flat"]',
-            '[class*="small-cube"]'
-        ];
-        let totalValue = 0;
-        let found = false;
-
         // Look for elements with aria-label or title indicating value
         const allEls = area.querySelectorAll('*');
+        let totalValue = 0;
+        let found = false;
         for (const el of allEls) {
             if (el.offsetParent === null) continue;
             const aria = el.getAttribute('aria-label') || el.getAttribute('title') || '';
@@ -353,28 +407,24 @@
                 log('Found element with value: ' + aria + ' = ' + num);
             }
         }
+        if (found) return totalValue.toString();
 
-        // Also try to count SVG images? maybe class names like "cube-1", etc.
-        if (!found) {
-            // Count number of small cube images
-            const cubeImgs = area.querySelectorAll('img, svg');
-            // Heuristic: count images that are small (likely cubes)
-            let cubeCount = 0;
-            for (const img of cubeImgs) {
-                if (img.offsetParent === null) continue;
-                const rect = img.getBoundingClientRect();
-                if (rect.width < 100 && rect.height < 100) cubeCount++;
-            }
-            if (cubeCount > 0) {
-                totalValue = cubeCount;
-                found = true;
-                log('Counted ' + cubeCount + ' small images as cubes');
-            }
+        // Fallback: count images that look like cubes
+        const cubeImgs = area.querySelectorAll('img, svg');
+        let cubeCount = 0;
+        for (const img of cubeImgs) {
+            if (img.offsetParent === null) continue;
+            const rect = img.getBoundingClientRect();
+            if (rect.width < 100 && rect.height < 100) cubeCount++;
         }
-
-        return found ? totalValue.toString() : null;
+        if (cubeCount > 0) {
+            log('Counted ' + cubeCount + ' small images as cubes');
+            return cubeCount.toString();
+        }
+        return null;
     }
 
+    // ========== AI HELPERS ==========
     async function getAIChoiceIndex(question, choices) {
         const prompt = `Question:\n${question}\n\nAnswer choices:\n${choices.map((c,i)=>`${i+1}. ${c}`).join('\n')}\n\nOutput ONLY the number of the correct choice (1-based index).`;
         return new Promise((resolve) => {
@@ -409,18 +459,16 @@
         });
     }
 
-    async function runLoop() {
+    // ========== RUN LOOP (different for each cheat) ==========
+    async function runMathLoop() {
         while (running) {
             const q = getQuestion();
             if (!q) { log('No question'); await sleep(2000); continue; }
             if (q === lastQuestion) {
                 sameQuestionStreak++;
                 if (sameQuestionStreak >= 5) {
-                    log('Stuck on same question. Trying skip...');
-                    if (!clickNextOrSkip()) {
-                        log('No skip button found. Waiting 10 seconds...');
-                        await sleep(10000);
-                    }
+                    log('Stuck. Trying skip...');
+                    if (!clickNextOrSkip()) await sleep(10000);
                     sameQuestionStreak = 0;
                 }
             } else {
@@ -428,34 +476,6 @@
                 lastQuestion = q;
             }
             log('Question: ' + q.substring(0,80));
-
-            // Visual cube counting
-            if (/cube/i.test(q) && /shown/i.test(q)) {
-                log('Cube counting question detected.');
-                const cubeValue = countCubesFromDOM();
-                if (cubeValue) {
-                    log('Counted cubes value: ' + cubeValue);
-                    if (inputDigits(cubeValue)) {
-                        questionCount++;
-                        log('Answered ' + questionCount);
-                        await sleep(2500);
-                        if (!clickNextOrSkip()) await sleep(1000);
-                        continue;
-                    }
-                }
-                log('Could not count cubes, trying to skip...');
-                if (clickNextOrSkip()) await sleep(2000);
-                else await sleep(5000);
-                continue;
-            }
-
-            // General visual question skip
-            if (isVisualQuestion(q)) {
-                log('Visual question detected, attempting to skip...');
-                if (clickNextOrSkip()) await sleep(2000);
-                else await sleep(5000);
-                continue;
-            }
 
             let answered = false;
             let ans = solveBasicMath(q);
@@ -496,7 +516,56 @@
                 clickNextOrSkip();
             }
         }
-        log('Stopped.');
+    }
+
+    async function runCubeLoop() {
+        while (running) {
+            const q = getQuestion();
+            if (!q) { log('No question'); await sleep(2000); continue; }
+            if (q === lastQuestion) {
+                sameQuestionStreak++;
+                if (sameQuestionStreak >= 5) {
+                    log('Stuck. Trying skip...');
+                    if (!clickNextOrSkip()) await sleep(10000);
+                    sameQuestionStreak = 0;
+                }
+            } else {
+                sameQuestionStreak = 0;
+                lastQuestion = q;
+            }
+            log('Question: ' + q.substring(0,80));
+
+            if (/cube/i.test(q) && /shown/i.test(q)) {
+                const val = countCubesFromDOM();
+                if (val) {
+                    if (inputDigits(val)) {
+                        questionCount++;
+                        log('Answered ' + questionCount);
+                        await sleep(2500);
+                        if (!clickNextOrSkip()) await sleep(1000);
+                        continue;
+                    }
+                }
+                log('Cube count failed, skipping...');
+                if (clickNextOrSkip()) await sleep(2000);
+                else await sleep(5000);
+                continue;
+            }
+
+            // For non-cube questions, just skip
+            log('Not a cube question, skipping...');
+            if (clickNextOrSkip()) await sleep(2000);
+            else await sleep(5000);
+        }
+    }
+
+    function solveBasicMath(q) {
+        const m = q.match(/^(Add|Subtract|Multiply|Divide|Evaluate)\.?\s+([\d,]+)\s*([+\-*/])\s*([\d,]+)/i);
+        if (!m) return null;
+        const a = parseFloat(m[2].replace(/,/g,'')), b = parseFloat(m[4].replace(/,/g,''));
+        let r;
+        switch(m[3]) { case '+': r=a+b; break; case '-': r=a-b; break; case '*': r=a*b; break; case '/': r=a/b; break; default: return null; }
+        return r % 1 === 0 ? r.toString() : r.toFixed(2).replace(/\.?0+$/,'');
     }
 
     function updateUI() {
@@ -508,11 +577,18 @@
 
     document.getElementById('ixl-toggle').addEventListener('click', () => {
         if (!licenseKey) { alert('Activate first.'); return; }
+        if (!currentCheat) { alert('Select a cheat from hub first.'); return; }
         running = !running;
         updateUI();
-        if (running) runLoop();
+        if (running) {
+            log('Started ' + currentCheat);
+            if (currentCheat === 'math') runMathLoop();
+            else if (currentCheat === 'cube') runCubeLoop();
+        } else {
+            log('Stopped.');
+        }
     });
 
     function sleep(ms) { return new Promise(r=>setTimeout(r,ms)); }
-    log('Panel ready. Enter license key.');
+    log('Hub ready. Enter license key.');
 })();
