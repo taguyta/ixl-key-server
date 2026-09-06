@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IXL Auto Answerer
 // @namespace    http://tampermonkey.net/
-// @version      16.15
-// @description  Auto answer IXL with server-validated license key, draggable panel, robust option matching
+// @version      16.17
+// @description  Auto answer IXL with server-validated license key, draggable panel, robust choice index AI
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -16,67 +16,71 @@
 
 (function() {
     'use strict';
-    if (window.__ixlLoaded) return;
-    window.__ixlLoaded = true;
+    if (window.__ixlAutoAnswererLoaded) return;
+    window.__ixlAutoAnswererLoaded = true;
 
     const GROQ_API_KEY = "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";
     const MODEL = "groq/compound";
     const SERVER = "https://ixl-key-server.onrender.com";
-    const VERSION = "16.15";
+    const VERSION = "16.17";
 
     let licenseKey = GM_getValue('license_key', '');
     let running = false;
+    let questionCount = 0;
+    let sameQuestionStreak = 0;
+    let lastQuestion = '';
 
-    // Styles
     GM_addStyle(`
-        #ixl-loader { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); z-index:999998; background:#2c3e50; color:#fff; padding:20px; border-radius:10px; font-family:Arial; width:350px; display:flex; gap:10px; }
-        #ixl-loader input { flex:1; padding:8px; border-radius:5px; border:none; }
-        #ixl-loader button { background:#3498db; color:#fff; border:none; padding:8px 15px; border-radius:5px; cursor:pointer; }
-        #ixl-panel { position: fixed; top:10px; right:10px; z-index:999999; background:#2c3e50; color:#fff; padding:15px; border-radius:10px; font-family:Arial; width:300px; display:none; box-shadow:0 0 20px rgba(0,0,0,0.5); }
-        #ixl-panel.show { display:block; }
-        #ixl-status { text-align:center; padding:5px; background:#c0392b; border-radius:3px; margin-bottom:8px; }
-        #ixl-status.on { background:#27ae60; }
-        #ixl-toggle { width:100%; background:#3498db; border:none; color:#fff; padding:8px; border-radius:5px; cursor:pointer; font-weight:bold; }
-        #ixl-log { background:#34495e; height:150px; overflow-y:auto; font-size:12px; padding:8px; margin-top:8px; white-space:pre-wrap; }
-        .drag-handle { cursor:move; background:#1a252f; padding:8px 15px; margin:-15px -15px 10px -15px; border-radius:10px 10px 0 0; user-select:none; }
-        .drag-handle h3 { margin:0; color:#3498db; }
+        #ixl-loader { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 999998; background: #2c3e50; color: #fff; padding: 20px 30px; border-radius: 10px; font-family: Arial; box-shadow: 0 0 20px rgba(0,0,0,0.5); width: 400px; max-width: 90%; display: flex; align-items: center; gap: 10px; transition: all 0.5s ease; }
+        #ixl-loader input { flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 5px; font-size: 14px; }
+        #ixl-loader button { padding: 10px 20px; background: #3498db; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        #ixl-panel { position: fixed; top: 10px; right: 10px; z-index: 999999; background: #2c3e50; color: #fff; padding: 15px; border-radius: 10px; font-family: Arial; width: 320px; box-shadow: 0 0 20px rgba(0,0,0,0.5); display: none; }
+        #ixl-panel.show { display: block; }
+        #ixl-status { text-align: center; padding: 5px; background: #c0392b; border-radius: 3px; margin-bottom: 8px; font-weight: bold; }
+        #ixl-status.on { background: #27ae60; }
+        #ixl-toggle { width: 100%; background: #3498db; border: none; color: #fff; padding: 8px; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        #ixl-log { background: #34495e; height: 150px; overflow-y: auto; font-size: 12px; padding: 8px; margin-top: 8px; white-space: pre-wrap; }
+        #ixl-panel .drag-handle { cursor: move; background: #1a252f; padding: 8px 15px; margin: -15px -15px 10px -15px; border-radius: 10px 10px 0 0; user-select: none; display: flex; align-items: center; justify-content: space-between; touch-action: none; }
+        #ixl-panel .drag-handle h3 { margin: 0; color: #3498db; font-size: 16px; }
     `);
 
     // Loader
     const loader = document.createElement('div');
     loader.id = 'ixl-loader';
-    loader.innerHTML = `<input type="text" id="ixl-key" placeholder="License Key"><button id="ixl-activate">Activate</button>`;
+    loader.innerHTML = `<input type="text" id="ixl-key" placeholder="Enter License Key"><button id="ixl-activate" type="button">Activate</button>`;
     document.body.appendChild(loader);
-
     if (licenseKey) document.getElementById('ixl-key').value = licenseKey;
 
     // Panel
     const panel = document.createElement('div');
     panel.id = 'ixl-panel';
     panel.innerHTML = `
-        <div class="drag-handle"><h3>IXL Auto Answerer</h3></div>
+        <div class="drag-handle"><h3>IXL Auto Answerer</h3><span>⠿</span></div>
         <div id="ixl-status">Status: OFF</div>
-        <button id="ixl-toggle">Start</button>
+        <button id="ixl-toggle" type="button">Start</button>
         <div id="ixl-log">Ready.</div>
     `;
     document.body.appendChild(panel);
 
-    // Dragging
+    // Dragging with pointer events
     const dragHandle = panel.querySelector('.drag-handle');
-    let isDragging = false, startX, startY, initialX, initialY;
-    dragHandle.addEventListener('mousedown', e => {
-        isDragging = true; startX = e.clientX; startY = e.clientY;
-        const r = panel.getBoundingClientRect(); initialX = r.left; initialY = r.top;
+    let isDragging = false, dragOffsetX = 0, dragOffsetY = 0;
+    dragHandle.addEventListener('pointerdown', e => {
+        isDragging = true;
+        const rect = panel.getBoundingClientRect();
+        dragOffsetX = e.clientX - rect.left;
+        dragOffsetY = e.clientY - rect.top;
+        dragHandle.setPointerCapture(e.pointerId);
         e.preventDefault();
     });
-    document.addEventListener('mousemove', e => {
+    dragHandle.addEventListener('pointermove', e => {
         if (!isDragging) return;
-        panel.style.left = (initialX + e.clientX - startX) + 'px';
-        panel.style.top = (initialY + e.clientY - startY) + 'px';
+        panel.style.left = (e.clientX - dragOffsetX) + 'px';
+        panel.style.top = (e.clientY - dragOffsetY) + 'px';
         panel.style.right = 'auto';
     });
-    document.addEventListener('mouseup', () => isDragging = false);
-    dragHandle.addEventListener('dragstart', e => e.preventDefault());
+    dragHandle.addEventListener('pointerup', e => { isDragging = false; dragHandle.releasePointerCapture(e.pointerId); });
+    dragHandle.addEventListener('pointercancel', e => { isDragging = false; });
 
     function log(msg) {
         const d = document.getElementById('ixl-log');
@@ -86,40 +90,38 @@
     }
 
     async function validateKey(key) {
-        if (!key) return alert('Enter license key');
+        if (!key) { alert('Please enter a license key.'); return false; }
         try {
             const res = await new Promise((resolve, reject) => {
                 GM_xmlhttpRequest({ method:'GET', url:`${SERVER}/api/validate-key?key=${encodeURIComponent(key)}`, onload:resolve, onerror:reject, timeout:10000 });
             });
             const data = JSON.parse(res.responseText);
-            if (!data.valid) { alert('Invalid: ' + data.reason); return false; }
+            if (!data.valid) { alert('License invalid: ' + data.reason); return false; }
             licenseKey = key;
             GM_setValue('license_key', key);
+            log('License OK, remaining: ' + Math.round(data.remainingMs / 60000) + ' min');
             return true;
         } catch(e) { alert('Cannot reach server'); return false; }
     }
 
     document.getElementById('ixl-activate').addEventListener('click', async () => {
         if (await validateKey(document.getElementById('ixl-key').value.trim())) {
-            loader.style.display = 'none';
-            panel.classList.add('show');
-            log('Activated');
+            loader.style.opacity = '0';
+            setTimeout(() => { loader.style.display = 'none'; panel.classList.add('show'); log('Activated'); }, 300);
         }
     });
 
-    // Arithmetic solver
-    function solveMath(q) {
+    function solveBasicMath(q) {
         const m = q.match(/^(Add|Subtract|Multiply|Divide|Evaluate)\.?\s+([\d,]+)\s*([+\-*/])\s*([\d,]+)/i);
         if (!m) return null;
-        let a = parseFloat(m[2].replace(/,/g,''));
-        let b = parseFloat(m[4].replace(/,/g,''));
+        const a = parseFloat(m[2].replace(/,/g,'')), b = parseFloat(m[4].replace(/,/g,''));
         let r;
         switch(m[3]) { case '+': r=a+b; break; case '-': r=a-b; break; case '*': r=a*b; break; case '/': r=a/b; break; default: return null; }
         return r % 1 === 0 ? r.toString() : r.toFixed(2).replace(/\.?0+$/,'');
     }
 
     function getQuestion() {
-        const sels = ['.question-component', '.crisp-question', '.question-text', '.question'];
+        const sels = ['.question-component .question-text','.question-component','.crisp-question','.skill-practice-question','.question-text','.question'];
         for (const s of sels) {
             const el = document.querySelector(s);
             if (el && el.textContent.trim()) return el.textContent.replace(/\s+/g,' ').trim();
@@ -127,78 +129,160 @@
         return '';
     }
 
-    // Enhanced option matching
-    function findAnswerElement(ans) {
-        // Create a list of all candidate clickable elements
-        const all = document.querySelectorAll('button, label, li, div, span, [role="button"], [role="radio"], [class*="choice"], [class*="option"], [class*="answer"]');
-        const ansNums = ans.match(/-?\d+/g) ? ans.match(/-?\d+/g).map(Number).sort((a,b)=>a-b) : null;
-
-        for (const el of all) {
+    // Extract answer choices from DOM (unique texts, likely multiple-choice)
+    function getAnswerChoices() {
+        const choices = [];
+        const selectors = '[class*="choice"], [class*="option"], [class*="answer"], label, button[role="radio"], li[role="radio"]';
+        const elements = document.querySelectorAll(selectors);
+        for (const el of elements) {
             if (el.offsetParent === null || el.closest('#ixl-panel') || el.closest('#ixl-loader')) continue;
             const text = (el.innerText || el.textContent || '').trim();
-            if (!text) continue;
-
-            // Exact normalized text match
-            if (text.replace(/\s+/g,'').toLowerCase() === ans.replace(/\s+/g,'').toLowerCase()) {
-                return el;
-            }
-
-            // Set match (numbers in any order)
-            if (ansNums && text.includes('{')) {
-                const textNums = text.match(/-?\d+/g).map(Number).sort((a,b)=>a-b);
-                if (ansNums.length === textNums.length && ansNums.every((v,i)=>v===textNums[i])) {
-                    return el;
-                }
+            if (text && text.length < 300 && !choices.includes(text)) {
+                choices.push(text);
             }
         }
-        return null;
+        // Remove the question itself if accidentally included? We'll assume choices are short.
+        return choices;
+    }
+
+    async function getAIChoiceIndex(question, choices) {
+        const prompt = `Question:\n${question}\n\nAnswer choices:\n${choices.map((c,i)=>`${i+1}. ${c}`).join('\n')}\n\nOutput ONLY the number of the correct choice (1-based index).`;
+        return new Promise((resolve) => {
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: 'https://api.groq.com/openai/v1/chat/completions',
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + GROQ_API_KEY },
+                data: JSON.stringify({ model: MODEL, messages:[{role:'system',content:'You are a math assistant. Select the correct answer index.'},{role:'user',content:prompt}], temperature:0.1, max_tokens:10 }),
+                onload: res => {
+                    try {
+                        const d = JSON.parse(res.responseText);
+                        const content = d.choices[0].message.content.trim();
+                        const idx = parseInt(content);
+                        if (!isNaN(idx) && idx >= 1 && idx <= choices.length) resolve(idx-1);
+                        else resolve(-1);
+                    } catch(e) { resolve(-1); }
+                },
+                onerror: () => resolve(-1)
+            });
+        });
+    }
+
+    function clickChoiceByIndex(index) {
+        const selectors = '[class*="choice"], [class*="option"], [class*="answer"], label, button[role="radio"], li[role="radio"]';
+        const elements = [...document.querySelectorAll(selectors)].filter(el => el.offsetParent !== null && !el.closest('#ixl-panel') && !el.closest('#ixl-loader'));
+        // Collect unique texts and corresponding elements
+        const seen = new Map();
+        for (const el of elements) {
+            const text = (el.innerText || el.textContent || '').trim();
+            if (text && !seen.has(text)) {
+                seen.set(text, el);
+            }
+        }
+        const choices = [...seen.keys()];
+        if (index >= 0 && index < choices.length) {
+            const targetText = choices[index];
+            const targetEl = seen.get(targetText);
+            log('Clicking choice ' + (index+1) + ': ' + targetText.substring(0,50));
+            targetEl.click();
+            return true;
+        }
+        return false;
     }
 
     function inputAnswer(ans) {
         ans = String(ans).trim();
-        log('Trying to input: ' + ans);
-
-        const target = findAnswerElement(ans);
-        if (target) {
-            log('Found answer element: ' + (target.innerText || target.textContent || '').trim().substring(0,50));
-            target.click();
-            setTimeout(() => clickSubmit(), 300);
+        log('Attempting answer: ' + ans);
+        // Digit boxes
+        const inputs = [...document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])')].filter(i => i.offsetParent !== null && !i.closest('#ixl-panel'));
+        if (inputs.length > 0) {
+            if (inputs.length === 1) {
+                inputs[0].value = ans.replace(/,/g,'');
+                inputs[0].dispatchEvent(new Event('input',{bubbles:true}));
+                inputs[0].dispatchEvent(new Event('change',{bubbles:true}));
+            } else {
+                const digits = ans.replace(/,/g,'').replace(/[^0-9]/g,'');
+                if (!digits) return false;
+                let str = digits;
+                if (str.length < inputs.length) str = ' '.repeat(inputs.length - str.length) + str;
+                if (str.length > inputs.length) str = str.slice(-inputs.length);
+                for (let i=0;i<inputs.length;i++) { inputs[i].value = str[i] === ' ' ? '' : str[i]; inputs[i].dispatchEvent(new Event('input',{bubbles:true})); inputs[i].dispatchEvent(new Event('change',{bubbles:true})); }
+            }
+            setTimeout(() => clickSubmit(), 700);
             return true;
         }
-
-        // Digit boxes fallback
-        const inputs = [...document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])')]
-            .filter(i => i.offsetParent !== null && !i.closest('#ixl-panel'));
-        if (inputs.length === 0) { log('No input found'); return false; }
-        if (inputs.length === 1) {
-            inputs[0].value = ans.replace(/,/g,'');
-            inputs[0].dispatchEvent(new Event('input',{bubbles:true}));
-            inputs[0].dispatchEvent(new Event('change',{bubbles:true}));
-        } else {
-            const digits = ans.replace(/,/g,'').replace(/[^0-9]/g,'');
-            if (!digits) { log('No digits'); return false; }
-            let str = digits;
-            if (str.length < inputs.length) str = ' '.repeat(inputs.length - str.length) + str;
-            if (str.length > inputs.length) str = str.slice(-inputs.length);
-            for (let i=0;i<inputs.length;i++) {
-                inputs[i].value = str[i] === ' ' ? '' : str[i];
-                inputs[i].dispatchEvent(new Event('input',{bubbles:true}));
-                inputs[i].dispatchEvent(new Event('change',{bubbles:true}));
-            }
-        }
-        setTimeout(() => clickSubmit(), 700);
-        return true;
+        return false;
     }
 
     function clickSubmit() {
         const btn = document.querySelector('.submit-button, .check-answer-button, button[type="submit"]');
-        if (btn) { btn.click(); return; }
+        if (btn && btn.offsetParent) { btn.click(); return; }
         const buttons = document.querySelectorAll('button');
         for (const b of buttons) if (b.offsetParent && /submit|check|enter|ok/i.test(b.textContent)) { b.click(); return; }
     }
 
-    async function aiAnswer(q) {
-        return new Promise((resolve) => {
+    function clickNext() {
+        const next = [...document.querySelectorAll('button')].find(b => b.offsetParent && /next|continue|ok|close/i.test(b.textContent));
+        if (next) { next.click(); return true; }
+        return false;
+    }
+
+    async function runLoop() {
+        while (running) {
+            const q = getQuestion();
+            if (!q) { log('No question'); await sleep(2000); continue; }
+            if (q === lastQuestion) {
+                sameQuestionStreak++;
+                if (sameQuestionStreak >= 3) { log('Stuck on same question. Stopping.'); running=false; updateUI(); break; }
+            } else {
+                sameQuestionStreak = 0;
+                lastQuestion = q;
+            }
+            log('Question: ' + q.substring(0,80));
+
+            let answered = false;
+            // Try basic math first
+            let ans = solveBasicMath(q);
+            if (ans) {
+                if (inputAnswer(ans)) { answered = true; }
+            }
+            // If not answered, try multiple choice via AI index
+            if (!answered) {
+                const choices = getAnswerChoices();
+                if (choices.length > 0) {
+                    log(`Found ${choices.length} choices`);
+                    const idx = await getAIChoiceIndex(q, choices);
+                    if (idx >= 0) {
+                        answered = clickChoiceByIndex(idx);
+                        if (answered) {
+                            setTimeout(clickSubmit, 300);
+                        }
+                    }
+                }
+                // Fallback to text matching AI direct answer
+                if (!answered) {
+                    ans = await getAIAnswer(q);
+                    if (ans && ans !== 'SKIP') {
+                        answered = inputAnswer(ans);
+                    }
+                }
+            }
+
+            if (answered) {
+                questionCount++;
+                log('Answered ' + questionCount);
+                await sleep(2500);
+                if (!clickNext()) await sleep(1000);
+            } else {
+                log('Could not answer, trying next...');
+                await sleep(2000);
+                clickNext();
+            }
+        }
+        log('Stopped.');
+    }
+
+    async function getAIAnswer(q) {
+        return new Promise(resolve => {
             GM_xmlhttpRequest({
                 method:'POST', url:'https://api.groq.com/openai/v1/chat/completions',
                 headers:{'Content-Type':'application/json','Authorization':'Bearer '+GROQ_API_KEY},
@@ -209,30 +293,20 @@
         });
     }
 
-    let count=0;
-    async function run() {
-        while (running) {
-            const q = getQuestion();
-            if (!q) { log('No question'); await sleep(2000); continue; }
-            let ans = solveMath(q);
-            if (!ans) ans = await aiAnswer(q);
-            if (ans && ans !== 'SKIP') {
-                if (inputAnswer(ans)) { count++; log('Answered '+count); await sleep(2500); }
-                else { log('Input failed'); await sleep(2000); }
-            } else { await sleep(2000); }
-            const next = [...document.querySelectorAll('button')].find(b => b.offsetParent && /next|continue|ok|close/i.test(b.textContent));
-            if (next) { next.click(); await sleep(500); }
-        }
+    function updateUI() {
+        document.getElementById('ixl-toggle').textContent = running ? 'Stop' : 'Start';
+        const status = document.getElementById('ixl-status');
+        status.textContent = 'Status: ' + (running?'ON':'OFF');
+        status.className = running ? 'on' : '';
     }
 
     document.getElementById('ixl-toggle').addEventListener('click', () => {
+        if (!licenseKey) { alert('Activate first.'); return; }
         running = !running;
-        document.getElementById('ixl-toggle').textContent = running ? 'Stop' : 'Start';
-        const st = document.getElementById('ixl-status');
-        st.textContent = 'Status: ' + (running?'ON':'OFF');
-        st.className = running ? 'on' : '';
-        if (running) run();
+        updateUI();
+        if (running) runLoop();
     });
 
-    function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+    function sleep(ms) { return new Promise(r=>setTimeout(r,ms)); }
+    log('Panel ready. Enter license key.');
 })();
