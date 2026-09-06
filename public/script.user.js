@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IXL Auto Answerer
 // @namespace    http://tampermonkey.net/
-// @version      16.19
-// @description  Auto answer IXL with server-validated license key, draggable panel, universal AI answer handler
+// @version      16.20
+// @description  Auto answer IXL with server-validated license key, draggable panel, improved answer choice separation & matching
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -22,7 +22,7 @@
     const GROQ_API_KEY = "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";
     const MODEL = "groq/compound";
     const SERVER = "https://ixl-key-server.onrender.com";
-    const VERSION = "16.19";
+    const VERSION = "16.20";
 
     let licenseKey = GM_getValue('license_key', '');
     let running = false;
@@ -126,38 +126,68 @@
         return '';
     }
 
+    // Extract individual choices: each choice is an element whose text is short and contains numbers/braces
     function getAnswerChoices() {
         const choices = [];
-        const selectors = [
-            '[class*="choice"]', '[class*="option"]', '[class*="answer"]',
-            'label', 'button[role="radio"]', 'li[role="radio"]',
-            '.multiple-choice-option', '.answer-choice', '.crisp-option'
-        ];
-        const seenTexts = new Set();
-        for (const sel of selectors) {
-            const elements = document.querySelectorAll(sel);
-            for (const el of elements) {
-                if (el.offsetParent === null || el.closest('#ixl-panel') || el.closest('#ixl-loader')) continue;
-                let text = (el.innerText || el.textContent || '').trim();
-                if (!text) continue;
-                if (text.length > 300) continue;
-                if (seenTexts.has(text)) continue;
-                seenTexts.add(text);
-                choices.push(text);
-            }
+        const seen = new Set();
+        const all = document.querySelectorAll('div, span, p, li, button, label');
+        for (const el of all) {
+            if (el.offsetParent === null || el.closest('#ixl-panel') || el.closest('#ixl-loader')) continue;
+            const text = (el.innerText || el.textContent || '').trim();
+            if (!text || text.length > 200) continue;
+            // Skip if text is just the question (long) or contains "Question" etc.
+            // We'll accept any text that has numbers and perhaps braces/parentheses.
+            if (!/\d/.test(text)) continue;
+            if (seen.has(text)) continue;
+            seen.add(text);
+            choices.push(text);
         }
-        if (choices.length === 0) {
-            const allEls = document.querySelectorAll('div, span, p, li');
-            for (const el of allEls) {
-                if (el.offsetParent === null || el.closest('#ixl-panel') || el.closest('#ixl-loader')) continue;
-                const text = (el.innerText || el.textContent || '').trim();
-                if (text && text.includes('(') && text.length < 200 && !seenTexts.has(text)) {
-                    seenTexts.add(text);
-                    choices.push(text);
+        // If no choices found, fallback to entire question area split by newlines? Not reliable.
+        return choices;
+    }
+
+    function normalizeMinus(s) {
+        return s.replace(/[\u2013\u2014\u2212]/g, '-');
+    }
+
+    function extractNumbers(text) {
+        const normalized = normalizeMinus(text);
+        const matches = normalized.match(/-?\d+(?:\.\d+)?/g);
+        return matches ? matches.map(Number) : [];
+    }
+
+    function clickByAnswerText(ans) {
+        ans = normalizeMinus(String(ans).trim());
+        const ansNums = extractNumbers(ans);
+        const all = document.querySelectorAll('div, span, p, li, button, label');
+        for (const el of all) {
+            if (el.offsetParent === null || el.closest('#ixl-panel') || el.closest('#ixl-loader')) continue;
+            const text = normalizeMinus((el.innerText || el.textContent || '').trim());
+            if (!text) continue;
+            const textNums = extractNumbers(text);
+            // Try exact normalized text first
+            if (text.replace(/\s+/g,'').toLowerCase() === ans.replace(/\s+/g,'').toLowerCase()) {
+                log(`Exact match: ${text}`);
+                el.click();
+                return true;
+            }
+            // Number set match (order matters for ordered pairs, but here we'll use unordered for sets)
+            if (ansNums.length > 0 && textNums.length === ansNums.length) {
+                const sortedAns = [...ansNums].sort((a,b)=>a-b);
+                const sortedText = [...textNums].sort((a,b)=>a-b);
+                if (sortedAns.every((v,i) => v === sortedText[i])) {
+                    log(`Number set match: ${text}`);
+                    el.click();
+                    return true;
                 }
             }
         }
-        return choices;
+        return false;
+    }
+
+    function clickChoiceByIndex(index) {
+        // Not used as much now; we'll keep for possible future
+        return false;
     }
 
     async function getAIChoiceIndex(question, choices) {
@@ -182,101 +212,24 @@
         });
     }
 
-    function extractNumbers(text) {
-        return (text.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
-    }
-
-    function clickByAnswerText(ans) {
-        const selectors = [
-            '[class*="choice"]', '[class*="option"]', '[class*="answer"]',
-            'label', 'button[role="radio"]', 'li[role="radio"]',
-            'div', 'span', 'p', 'li'
-        ];
-        const elements = [...document.querySelectorAll(selectors.join(','))]
-            .filter(el => el.offsetParent !== null && !el.closest('#ixl-panel') && !el.closest('#ixl-loader'));
-
-        const ansNums = extractNumbers(ans);
-        const normalizedAns = ans.replace(/\s+/g, '').toLowerCase();
-
-        // Exact normalized text match
-        for (const el of elements) {
-            const text = (el.innerText || el.textContent || '').trim();
-            if (!text) continue;
-            if (text.replace(/\s+/g, '').toLowerCase() === normalizedAns) {
-                log(`Exact text match: ${text}`);
-                el.click();
-                return true;
-            }
-        }
-
-        // Number match (ordered)
-        if (ansNums.length > 0) {
-            for (const el of elements) {
-                const text = (el.innerText || el.textContent || '').trim();
-                if (!text) continue;
-                const textNums = extractNumbers(text);
-                if (textNums.length === ansNums.length && textNums.every((v,i) => v === ansNums[i])) {
-                    log(`Ordered number match: ${text}`);
-                    el.click();
-                    return true;
-                }
-            }
-        }
-
-        // Set match (unordered)
-        if (ansNums.length > 0) {
-            const sortedAns = [...ansNums].sort((a,b) => a-b);
-            for (const el of elements) {
-                const text = (el.innerText || el.textContent || '').trim();
-                if (!text) continue;
-                const textNums = extractNumbers(text);
-                const sortedText = [...textNums].sort((a,b) => a-b);
-                if (sortedText.length === sortedAns.length && sortedText.every((v,i) => v === sortedAns[i])) {
-                    log(`Set match: ${text}`);
-                    el.click();
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    function clickChoiceByIndex(index) {
-        const selectors = [
-            '[class*="choice"]', '[class*="option"]', '[class*="answer"]',
-            'label', 'button[role="radio"]', 'li[role="radio"]'
-        ];
-        const elements = [...document.querySelectorAll(selectors.join(','))]
-            .filter(el => el.offsetParent !== null && !el.closest('#ixl-panel') && !el.closest('#ixl-loader'));
-        const choicesMap = new Map();
-        for (const el of elements) {
-            let text = (el.innerText || el.textContent || '').trim();
-            if (!text || text.length > 300) continue;
-            if (!choicesMap.has(text)) choicesMap.set(text, el);
-        }
-        const choices = [...choicesMap.keys()];
-        if (index >= 0 && index < choices.length) {
-            const targetText = choices[index];
-            const targetEl = choicesMap.get(targetText);
-            log(`Clicking choice ${index + 1}: ${targetText.substring(0, 50)}`);
-            targetEl.click();
-            return true;
-        }
-        return false;
-    }
-
     function inputAnswer(ans) {
         ans = String(ans).trim();
         log('Attempting answer: ' + ans);
+        // Try clicking by text/number first (for multiple choice)
+        if (clickByAnswerText(ans)) {
+            log('Clicked answer via text match');
+            setTimeout(() => clickSubmit(), 300);
+            return true;
+        }
+        // If no clickable match, try digit boxes
         const inputs = [...document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])')].filter(i => i.offsetParent !== null && !i.closest('#ixl-panel'));
         if (inputs.length > 0) {
             if (inputs.length === 1) {
-                inputs[0].value = ans.replace(/,/g,'');
+                inputs[0].value = normalizeMinus(ans).replace(/,/g,'');
                 inputs[0].dispatchEvent(new Event('input',{bubbles:true}));
                 inputs[0].dispatchEvent(new Event('change',{bubbles:true}));
             } else {
-                const digits = ans.replace(/,/g,'').replace(/[^0-9]/g,'');
+                const digits = normalizeMinus(ans).replace(/,/g,'').replace(/[^0-9]/g,'');
                 if (!digits) return false;
                 let str = digits;
                 if (str.length < inputs.length) str = ' '.repeat(inputs.length - str.length) + str;
@@ -331,24 +284,25 @@
             // 1. Basic math
             let ans = solveBasicMath(q);
             if (ans) answered = inputAnswer(ans);
-            // 2. Multiple choice via AI index
+            // 2. AI index method (now with better choices)
             if (!answered) {
                 const choices = getAnswerChoices();
                 if (choices.length > 0) {
                     log(`Found ${choices.length} choices`);
                     const idx = await getAIChoiceIndex(q, choices);
                     if (idx >= 0) {
-                        answered = clickChoiceByIndex(idx);
-                        if (!answered) answered = clickByAnswerText(choices[idx]);
+                        // Instead of index, we can directly click the corresponding choice text
+                        const targetText = choices[idx];
+                        answered = clickByAnswerText(targetText);
+                        if (!answered) answered = inputAnswer(targetText);
                         if (answered) setTimeout(clickSubmit, 300);
                     }
                 }
-                // 3. Direct answer
+                // 3. Direct AI answer
                 if (!answered) {
                     ans = await getAIAnswer(q);
                     if (ans && ans !== 'SKIP') {
-                        answered = clickByAnswerText(ans);
-                        if (!answered) answered = inputAnswer(ans);
+                        answered = inputAnswer(ans);
                     }
                 }
             }
