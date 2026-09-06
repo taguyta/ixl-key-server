@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         Tempest Hub
 // @namespace    http://tampermonkey.net/
-// @version      18.2
-// @description  Multi-cheat hub for school platforms. License required. Enhanced answer extraction, cube counter fix.
+// @version      18.3
+// @description  Multi-cheat hub for school platforms. License required. Advanced answer extraction, cube counter via image analysis, settings.
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // @connect      ixl-key-server.onrender.com
 // @connect      api.groq.com
 // @updateURL    https://ixl-key-server.onrender.com/script.user.js
@@ -23,7 +24,7 @@
     const GROQ_API_KEY = "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";
     const MODEL = "groq/compound";
     const SERVER = "https://ixl-key-server.onrender.com";
-    const VERSION = "18.2";
+    const VERSION = "18.3";
 
     // ==================== STATE ====================
     let licenseKey = GM_getValue('license_key', '');
@@ -33,13 +34,9 @@
     let sameQuestionStreak = 0;
     let lastQuestion = '';
     let updateRequired = false;
-
-    // User customization
+    let snowEnabled = GM_getValue('snowEnabled', false);
     let panelBgColor = GM_getValue('panelBgColor', '#2c3e50');
     let panelTextColor = GM_getValue('panelTextColor', '#ffffff');
-    let snowEnabled = GM_getValue('snowEnabled', false);
-
-    // Network interception storage
     let interceptedAnswers = [];
 
     // ==================== STYLES ====================
@@ -127,7 +124,6 @@
         } catch(e) {}
     }
 
-    // Install hooks early
     installNetworkHooks();
 
     // ==================== LOADER ====================
@@ -498,20 +494,29 @@
         return /shown|cube|picture|graph|figure|tens|ones|base[- ]ten|count the/i.test(questionText);
     }
 
-    // FIXED CUBE COUNTER
+    // ==================== CUBE COUNTER (FIXED) ====================
     function countCubesFromDOM() {
         const area = getQuestionArea();
         let total = 0;
         let found = false;
 
-        // 1. Attribute values (aria-label, title, alt)
+        // 1. Check intercepted answers first
+        if (interceptedAnswers.length > 0) {
+            const lastAns = interceptedAnswers[interceptedAnswers.length - 1];
+            const num = parseInt(lastAns.replace(/,/g, ''));
+            if (!isNaN(num)) {
+                log('Using intercepted answer: ' + num);
+                return num.toString();
+            }
+        }
+
+        // 2. Look for explicit values in aria-label, title, alt
         const allEls = area.querySelectorAll('*');
         for (const el of allEls) {
             if (el.offsetParent === null) continue;
             const attrs = [el.getAttribute('aria-label'), el.getAttribute('title'), el.getAttribute('alt')];
             for (const attr of attrs) {
                 if (!attr) continue;
-                // Direct number: "5 cubes"
                 const num = parseInt(attr.replace(/,/g, ''));
                 if (!isNaN(num)) {
                     total += num;
@@ -519,7 +524,6 @@
                     log('Found attr number: ' + attr + ' = ' + num);
                     continue;
                 }
-                // Word match: "5 ones" (ignore tens/hundreds)
                 const wordMatch = attr.match(/(\d+)\s*(ones?|tens?|hundreds?|thousands?)/i);
                 if (wordMatch) {
                     const value = parseInt(wordMatch[1]);
@@ -533,7 +537,7 @@
             }
         }
 
-        // 2. SVG text numbers
+        // 3. SVG text numbers
         const texts = area.querySelectorAll('svg text, svg tspan');
         for (const t of texts) {
             if (t.offsetParent === null) continue;
@@ -546,7 +550,7 @@
             }
         }
 
-        // 3. Fallback: count only cube-like elements, exclude rods/tens/hundreds
+        // 4. Fallback: count only cube-like elements, exclude rods/tens/hundreds
         if (!found) {
             const possibleCubes = area.querySelectorAll('[class*="cube"], [class*="unit"], [class*="one"]');
             let cubeCount = 0;
@@ -566,6 +570,7 @@
         return found ? total.toString() : null;
     }
 
+    // ==================== AI HELPERS ====================
     async function getAIChoiceIndex(question, choices) {
         const prompt = `Question:\n${question}\n\nAnswer choices:\n${choices.map((c,i)=>`${i+1}. ${c}`).join('\n')}\n\nOutput ONLY the number of the correct choice (1-based index).`;
         return new Promise((resolve) => {
@@ -600,6 +605,7 @@
         });
     }
 
+    // ==================== MAIN LOOP ====================
     async function runIXLLoop() {
         while (running) {
             const q = getQuestion();
