@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IXL Auto Answerer (Loader + Server Key + Auto Update + Arithmetic Solver)
 // @namespace    http://tampermonkey.net/
-// @version      16.6
+// @version      16.7
 // @description  Auto answer IXL with server-validated license key, simplified loader GUI, groq/compound model, mandatory updates, basic math solver
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
@@ -17,12 +17,14 @@
 (function() {
     'use strict';
 
+    // ========== CONFIG ==========
     const GROQ_API_KEY = "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";
     const DEFAULT_MODEL = "groq/compound";
     const SERVER_URL = "https://ixl-key-server.onrender.com";
     const SECRET = "IXL_CHEAT_SECRET_2024";
-    const CURRENT_VERSION = "16.6";
+    const CURRENT_VERSION = "16.7";
 
+    // ========== STATE ==========
     let autoAnswer = false;
     let licenseKey = GM_getValue('license_key', '');
     let manualQuestionEl = null;
@@ -31,7 +33,7 @@
 
     const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
-    // Styles
+    // ========== STYLES ==========
     GM_addStyle(`
         #ixl-loader {
             position: fixed; top: 50%; left: 50%;
@@ -114,16 +116,16 @@
         }
     `);
 
-    // Loader
+    // ========== LOADER ==========
     const loader = document.createElement('div');
     loader.id = 'ixl-loader';
     loader.innerHTML = `
         <input type="text" id="ixl-license-input" placeholder="Enter License Key">
-        <button id="ixl-activate">Activate</button>
+        <button id="ixl-activate" type="button">Activate</button>
     `;
     document.body.appendChild(loader);
 
-    // Main panel
+    // ========== MAIN PANEL ==========
     const panel = document.createElement('div');
     panel.id = 'ixl-cheat-panel';
     panel.innerHTML = `
@@ -137,11 +139,12 @@
     `;
     document.body.appendChild(panel);
 
+    // Load saved license key
     if (licenseKey) {
         document.getElementById('ixl-license-input').value = licenseKey;
     }
 
-    // Dragging
+    // ========== DRAGGING ==========
     const dragHandle = panel.querySelector('.drag-handle');
     let isDragging = false, startX, startY, initialX, initialY;
     dragHandle.addEventListener('mousedown', e => {
@@ -173,7 +176,8 @@
                     method: 'GET',
                     url: `${SERVER_URL}/api/validate-key?key=${encodeURIComponent(key)}`,
                     onload: resolve,
-                    onerror: reject
+                    onerror: reject,
+                    timeout: 10000
                 });
             });
             const data = JSON.parse(response.responseText);
@@ -187,14 +191,16 @@
             if (showAlert) log('License OK, remaining: ' + Math.round(data.remainingMs / 60000) + ' min');
             return true;
         } catch (e) {
-            if (showAlert) alert('Cannot reach server.');
+            console.error(e);
+            if (showAlert) alert('Cannot reach server. Please check your internet connection.');
             else log('Cannot reach server.');
             return false;
         }
     }
 
-    // Fixed activation button event
-    document.getElementById('ixl-activate').addEventListener('click', async function() {
+    // ========== ACTIVATE BUTTON (FIXED) ==========
+    const activateBtn = document.getElementById('ixl-activate');
+    activateBtn.onclick = async function() {
         const key = document.getElementById('ixl-license-input').value.trim();
         if (await validateLicenseKey(key, true)) {
             loader.style.opacity = '0';
@@ -205,9 +211,11 @@
                 checkForUpdates();
             }, 500);
         }
-    });
+    };
+    // Also add event listener as backup
+    activateBtn.addEventListener('click', activateBtn.onclick);
 
-    // Update overlay
+    // ========== UPDATE CHECK ==========
     function showUpdateOverlay() {
         if (document.getElementById('update-overlay')) return;
         const overlay = document.createElement('div');
@@ -237,7 +245,8 @@
                     method: 'GET',
                     url: `${SERVER_URL}/script.user.js?nocache=${Date.now()}`,
                     onload: resolve,
-                    onerror: reject
+                    onerror: reject,
+                    timeout: 5000
                 });
             });
             const scriptText = response.responseText;
@@ -254,7 +263,7 @@
     }
     setInterval(checkForUpdates, 5 * 60 * 1000);
 
-    // Arithmetic solver
+    // ========== ARITHMETIC SOLVER ==========
     function solveBasicMath(questionText) {
         let q = questionText.replace(/\b(Add|Subtract|Multiply|Divide)\.?\s*/gi, '');
         q = q.replace(/,/g, '');
@@ -274,7 +283,7 @@
         return result % 1 === 0 ? result.toString() : result.toFixed(2).replace(/\.?0+$/, '');
     }
 
-    // Question extraction (abbreviated)
+    // ========== QUESTION EXTRACTION ==========
     function getQuestionTextFromEl(el) {
         let text = el.innerText || el.textContent || '';
         text = text.replace(/\s+/g, ' ').trim();
@@ -284,7 +293,14 @@
     }
 
     function extractQuestionFromDOM() {
-        const specificSelectors = ['.question-component .question-text','.question-component','.crisp-question','.skill-practice-question','.question-text','.question'];
+        const specificSelectors = [
+            '.question-component .question-text',
+            '.question-component',
+            '.crisp-question',
+            '.skill-practice-question',
+            '.question-text',
+            '.question'
+        ];
         for (const sel of specificSelectors) {
             const el = document.querySelector(sel);
             if (el && el.textContent.trim()) {
@@ -321,6 +337,7 @@
         return '';
     }
 
+    // ========== CLEAN AI ANSWER ==========
     function cleanAIAnswer(raw) {
         let cleaned = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
         if (!cleaned) {
@@ -346,6 +363,7 @@
         return cleaned;
     }
 
+    // ========== INPUT ANSWER ==========
     function inputAnswer(answer) {
         if (!answer) return false;
         answer = String(answer).trim();
@@ -373,8 +391,10 @@
         });
         log(`Found ${digitBoxes.length} digit box(es)`);
         if (digitBoxes.length === 0) return false;
+
         const isNegative = answer.startsWith('-');
         const absAnswer = isNegative ? answer.slice(1) : answer;
+
         if (digitBoxes.length === 1) {
             let valueToSet = answer.replace(/,/g, '');
             digitBoxes[0].value = valueToSet;
@@ -383,12 +403,14 @@
             setTimeout(() => clickSubmitButton(digitBoxes), 700);
             return true;
         }
+
         const digits = absAnswer.replace(/,/g, '').replace(/[^0-9]/g, '');
         if (!digits) return false;
         const boxCount = digitBoxes.length;
         let digitStr = digits;
         if (digits.length > boxCount) digitStr = digits.slice(-boxCount);
         else if (digits.length < boxCount) digitStr = ' '.repeat(boxCount - digits.length) + digits;
+        log(`Filling ${boxCount} boxes with: ${digitStr.trim()}`);
         for (let i = 0; i < boxCount; i++) {
             digitBoxes[i].value = digitStr[i] === ' ' ? '' : digitStr[i];
             digitBoxes[i].dispatchEvent(new Event('input', { bubbles: true }));
