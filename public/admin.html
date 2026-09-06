@@ -4,7 +4,7 @@
     <title>IXL Key Manager</title>
     <style>
         body { font-family: Arial; background: #f0f2f5; margin: 0; padding: 20px; }
-        .container { max-width: 700px; margin: auto; background: white; padding: 25px; border-radius: 10px; box-shadow: 0 0 20px rgba(0,0,0,0.1); }
+        .container { max-width: 800px; margin: auto; background: white; padding: 25px; border-radius: 10px; box-shadow: 0 0 20px rgba(0,0,0,0.1); }
         h1 { text-align: center; color: #2c3e50; }
         .tab { overflow: hidden; border-bottom: 1px solid #ccc; margin-bottom: 20px; }
         .tab button {
@@ -16,7 +16,7 @@
             padding: 10px 16px;
             transition: 0.3s;
             font-size: 16px;
-            color: #000;               /* <-- BLACK TAB TEXT */
+            color: #000;               /* black tab text */
         }
         .tab button:hover { background-color: #ddd; }
         .tab button.active { background-color: #ccc; color: #000; }
@@ -34,6 +34,7 @@
         .expired { color: orange; }
         .active { color: green; }
         .error { color: red; }
+        .full-key { font-family: monospace; font-size: 12px; }
     </style>
 </head>
 <body>
@@ -59,12 +60,14 @@
             </div>
             <div id="history" class="tabcontent">
                 <h3>Generated Keys</h3>
-                <table id="keyTable"><tr><th>ID (short)</th><th>Created</th><th>Duration</th><th>Status</th><th>Action</th></tr></table>
+                <table id="keyTable">
+                    <tr><th>Short ID</th><th>Full Key</th><th>Created</th><th>Duration</th><th>Status</th><th>Action</th></tr>
+                </table>
                 <button onclick="refreshHistory()">Refresh</button>
             </div>
             <div id="settings" class="tabcontent">
                 <h3>Change Credentials</h3>
-                <p><i>For production, change the ADMIN_USER and ADMIN_PASS in server.js and restart.</i></p>
+                <p><i>Change ADMIN_USER and ADMIN_PASS in server.js and restart.</i></p>
             </div>
         </div>
     </div>
@@ -110,7 +113,7 @@
             const durationMs = duration * msPerUnit[unit];
             const result = await apiRequest('/api/generate-key', 'POST', { durationMs });
             if (result && result.key) {
-                document.getElementById('keyOutput').innerHTML = `<strong>Your key:</strong><br>${result.key}`;
+                document.getElementById('keyOutput').innerHTML = `<strong>Your key:</strong><br><span class="full-key">${result.key}</span>`;
                 refreshHistory();
             } else {
                 alert('Error generating key');
@@ -121,11 +124,18 @@
             const keys = await apiRequest('/api/keys');
             if (!keys) return;
             const table = document.getElementById('keyTable');
-            table.innerHTML = '<tr><th>ID (short)</th><th>Created</th><th>Duration</th><th>Status</th><th>Action</th></tr>';
+            table.innerHTML = '<tr><th>Short ID</th><th>Full Key</th><th>Created</th><th>Duration</th><th>Status</th><th>Action</th></tr>';
             keys.forEach(k => {
                 const row = table.insertRow();
                 const status = k.revoked ? 'revoked' : (k.status === 'expired' ? 'expired' : 'active');
-                row.innerHTML = `<td>${k.id.slice(0,8)}...</td><td>${new Date(k.created).toLocaleString()}</td><td>${(k.duration/60000).toFixed(0)} min</td><td class="${status}">${status}</td><td>${k.revoked ? '' : `<button onclick="revokeKey('${k.id}')">Delete</button>`}</td>`;
+                row.innerHTML = `
+                    <td>${k.id.slice(0,8)}...</td>
+                    <td class="full-key">${k.fullKey}</td>
+                    <td>${new Date(k.created).toLocaleString()}</td>
+                    <td>${(k.duration/60000).toFixed(0)} min</td>
+                    <td class="${status}">${status}</td>
+                    <td>${k.revoked ? '' : `<button onclick="revokeKey('${k.id}')">Delete</button>`}</td>
+                `;
             });
         }
 
