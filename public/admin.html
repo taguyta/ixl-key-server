@@ -7,18 +7,28 @@
         .container { max-width: 700px; margin: auto; background: white; padding: 25px; border-radius: 10px; box-shadow: 0 0 20px rgba(0,0,0,0.1); }
         h1 { text-align: center; color: #2c3e50; }
         .tab { overflow: hidden; border-bottom: 1px solid #ccc; margin-bottom: 20px; }
-        .tab button { background-color: inherit; float: left; border: none; outline: none; cursor: pointer; padding: 10px 16px; transition: 0.3s; font-size: 16px; }
+        .tab button {
+            background-color: inherit;
+            float: left;
+            border: none;
+            outline: none;
+            cursor: pointer;
+            padding: 10px 16px;
+            transition: 0.3s;
+            font-size: 16px;
+            color: #000;               /* <-- BLACK TAB TEXT */
+        }
         .tab button:hover { background-color: #ddd; }
-        .tab button.active { background-color: #ccc; }
+        .tab button.active { background-color: #ccc; color: #000; }
         .tabcontent { display: none; padding: 6px 12px; }
         .row { margin: 15px 0; }
-        label { display: block; font-weight: bold; margin-bottom: 5px; }
+        label { display: block; font-weight: bold; margin-bottom: 5px; color: #000; }
         input, select { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; }
         button { width: 100%; padding: 10px; background: #3498db; color: white; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; margin-top: 10px; }
         button:hover { background: #2980b9; }
         #keyOutput { background: #eaf2f8; padding: 10px; border-radius: 5px; word-break: break-all; font-family: monospace; margin-top: 10px; }
         table { width: 100%; border-collapse: collapse; }
-        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; color: #000; }
         th { background-color: #f2f2f2; }
         .revoked { color: red; }
         .expired { color: orange; }
@@ -124,7 +134,6 @@
             refreshHistory();
         }
 
-        // Auto-login if token exists
         if (authToken) showMain();
     </script>
 </body>
