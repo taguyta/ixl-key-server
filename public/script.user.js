@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IXL Auto Answerer
 // @namespace    http://tampermonkey.net/
-// @version      16.13
-// @description  Simplified auto answerer
+// @version      16.14
+// @description  Auto answer IXL with server-validated license key, draggable panel, AI + basic math
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -22,7 +22,7 @@
     const GROQ_API_KEY = "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";
     const MODEL = "groq/compound";
     const SERVER = "https://ixl-key-server.onrender.com";
-    const VERSION = "16.13";
+    const VERSION = "16.14";
 
     let licenseKey = GM_getValue('license_key', '');
     let running = false;
@@ -32,12 +32,14 @@
         #ixl-loader { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); z-index:999998; background:#2c3e50; color:#fff; padding:20px; border-radius:10px; font-family:Arial; width:350px; display:flex; gap:10px; }
         #ixl-loader input { flex:1; padding:8px; border-radius:5px; border:none; }
         #ixl-loader button { background:#3498db; color:#fff; border:none; padding:8px 15px; border-radius:5px; cursor:pointer; }
-        #ixl-panel { position: fixed; top:10px; right:10px; z-index:999999; background:#2c3e50; color:#fff; padding:15px; border-radius:10px; font-family:Arial; width:300px; display:none; }
+        #ixl-panel { position: fixed; top:10px; right:10px; z-index:999999; background:#2c3e50; color:#fff; padding:15px; border-radius:10px; font-family:Arial; width:300px; display:none; box-shadow:0 0 20px rgba(0,0,0,0.5); }
         #ixl-panel.show { display:block; }
         #ixl-status { text-align:center; padding:5px; background:#c0392b; border-radius:3px; margin-bottom:8px; }
         #ixl-status.on { background:#27ae60; }
         #ixl-toggle { width:100%; background:#3498db; border:none; color:#fff; padding:8px; border-radius:5px; cursor:pointer; font-weight:bold; }
         #ixl-log { background:#34495e; height:150px; overflow-y:auto; font-size:12px; padding:8px; margin-top:8px; white-space:pre-wrap; }
+        .drag-handle { cursor:move; background:#1a252f; padding:8px 15px; margin:-15px -15px 10px -15px; border-radius:10px 10px 0 0; user-select:none; }
+        .drag-handle h3 { margin:0; color:#3498db; }
     `);
 
     // Loader
@@ -51,8 +53,30 @@
     // Panel
     const panel = document.createElement('div');
     panel.id = 'ixl-panel';
-    panel.innerHTML = `<div id="ixl-status">Status: OFF</div><button id="ixl-toggle">Start</button><div id="ixl-log">Ready.</div>`;
+    panel.innerHTML = `
+        <div class="drag-handle"><h3>IXL Auto Answerer</h3></div>
+        <div id="ixl-status">Status: OFF</div>
+        <button id="ixl-toggle">Start</button>
+        <div id="ixl-log">Ready.</div>
+    `;
     document.body.appendChild(panel);
+
+    // Dragging
+    const dragHandle = panel.querySelector('.drag-handle');
+    let isDragging = false, startX, startY, initialX, initialY;
+    dragHandle.addEventListener('mousedown', e => {
+        isDragging = true; startX = e.clientX; startY = e.clientY;
+        const r = panel.getBoundingClientRect(); initialX = r.left; initialY = r.top;
+        e.preventDefault();
+    });
+    document.addEventListener('mousemove', e => {
+        if (!isDragging) return;
+        panel.style.left = (initialX + e.clientX - startX) + 'px';
+        panel.style.top = (initialY + e.clientY - startY) + 'px';
+        panel.style.right = 'auto';
+    });
+    document.addEventListener('mouseup', () => isDragging = false);
+    dragHandle.addEventListener('dragstart', e => e.preventDefault());
 
     function log(msg) {
         const d = document.getElementById('ixl-log');
@@ -75,14 +99,15 @@
         } catch(e) { alert('Cannot reach server'); return false; }
     }
 
-    document.getElementById('ixl-activate').onclick = async () => {
+    document.getElementById('ixl-activate').addEventListener('click', async () => {
         if (await validateKey(document.getElementById('ixl-key').value.trim())) {
             loader.style.display = 'none';
             panel.classList.add('show');
             log('Activated');
         }
-    };
+    });
 
+    // Arithmetic solver
     function solveMath(q) {
         const m = q.match(/^(Add|Subtract|Multiply|Divide|Evaluate)\.?\s+([\d,]+)\s*([+\-*/])\s*([\d,]+)/i);
         if (!m) return null;
@@ -104,28 +129,59 @@
 
     function inputAnswer(ans) {
         ans = String(ans).trim();
-        // Try to click matching option
-        const opts = document.querySelectorAll('[class*="choice"], [class*="option"], [class*="answer"], label, button');
+        log('Trying to input: ' + ans);
+
+        // Multiple choice: exact text match
+        const opts = document.querySelectorAll('[class*="choice"], [class*="option"], [class*="answer"], label, button, li');
         for (const o of opts) {
             if (o.offsetParent === null) continue;
             const text = (o.innerText || o.textContent || '').trim();
+            if (!text) continue;
             if (text.replace(/\s+/g,'').toLowerCase() === ans.replace(/\s+/g,'').toLowerCase()) {
+                log('Exact match: ' + text);
                 o.click();
                 setTimeout(() => clickSubmit(), 200);
                 return true;
             }
         }
+
+        // Set matching
+        let ansNums = null;
+        if (ans.includes('{')) ansNums = ans.match(/-?\d+/g).map(Number).sort((a,b)=>a-b);
+        if (ansNums) {
+            for (const o of opts) {
+                if (o.offsetParent === null) continue;
+                const text = (o.innerText || o.textContent || '').trim();
+                if (!text || !text.includes('{')) continue;
+                const nums = text.match(/-?\d+/g).map(Number).sort((a,b)=>a-b);
+                if (ansNums.length === nums.length && ansNums.every((v,i)=>v===nums[i])) {
+                    log('Set match: ' + text);
+                    o.click();
+                    setTimeout(() => clickSubmit(), 200);
+                    return true;
+                }
+            }
+        }
+
         // Digit boxes
-        const inputs = [...document.querySelectorAll('input[type="text"], input[type="number"]')].filter(i => i.offsetParent !== null && !i.closest('#ixl-panel'));
-        if (inputs.length === 0) return false;
-        if (inputs.length === 1) { inputs[0].value = ans; inputs[0].dispatchEvent(new Event('input',{bubbles:true})); }
-        else {
+        const inputs = [...document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])')]
+            .filter(i => i.offsetParent !== null && !i.closest('#ixl-panel'));
+        if (inputs.length === 0) { log('No input found'); return false; }
+        if (inputs.length === 1) {
+            inputs[0].value = ans.replace(/,/g,'');
+            inputs[0].dispatchEvent(new Event('input',{bubbles:true}));
+            inputs[0].dispatchEvent(new Event('change',{bubbles:true}));
+        } else {
             const digits = ans.replace(/,/g,'').replace(/[^0-9]/g,'');
-            if (!digits) return false;
+            if (!digits) { log('No digits'); return false; }
             let str = digits;
             if (str.length < inputs.length) str = ' '.repeat(inputs.length - str.length) + str;
             if (str.length > inputs.length) str = str.slice(-inputs.length);
-            for (let i=0;i<inputs.length;i++) { inputs[i].value = str[i] === ' ' ? '' : str[i]; inputs[i].dispatchEvent(new Event('input',{bubbles:true})); }
+            for (let i=0;i<inputs.length;i++) {
+                inputs[i].value = str[i] === ' ' ? '' : str[i];
+                inputs[i].dispatchEvent(new Event('input',{bubbles:true}));
+                inputs[i].dispatchEvent(new Event('change',{bubbles:true}));
+            }
         }
         setTimeout(() => clickSubmit(), 700);
         return true;
@@ -133,11 +189,9 @@
 
     function clickSubmit() {
         const btn = document.querySelector('.submit-button, .check-answer-button, button[type="submit"]');
-        if (btn) btn.click();
-        else {
-            const buttons = document.querySelectorAll('button');
-            for (const b of buttons) if (b.offsetParent && /submit|check|enter|ok/i.test(b.textContent)) { b.click(); break; }
-        }
+        if (btn) { btn.click(); return; }
+        const buttons = document.querySelectorAll('button');
+        for (const b of buttons) if (b.offsetParent && /submit|check|enter|ok/i.test(b.textContent)) { b.click(); return; }
     }
 
     async function aiAnswer(q) {
@@ -163,20 +217,19 @@
                 if (inputAnswer(ans)) { count++; log('Answered '+count); await sleep(2500); }
                 else { log('Input failed'); await sleep(2000); }
             } else { await sleep(2000); }
-            // click next
             const next = [...document.querySelectorAll('button')].find(b => b.offsetParent && /next|continue|ok|close/i.test(b.textContent));
             if (next) { next.click(); await sleep(500); }
         }
     }
 
-    document.getElementById('ixl-toggle').onclick = () => {
+    document.getElementById('ixl-toggle').addEventListener('click', () => {
         running = !running;
         document.getElementById('ixl-toggle').textContent = running ? 'Stop' : 'Start';
         const st = document.getElementById('ixl-status');
         st.textContent = 'Status: ' + (running?'ON':'OFF');
         st.className = running ? 'on' : '';
         if (running) run();
-    };
+    });
 
     function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 })();
