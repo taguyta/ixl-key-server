@@ -1,4 +1,3 @@
-// server.js
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
@@ -8,7 +7,7 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const SECRET = "IXL_CHEAT_SECRET_2024";
+const SECRET = "IXL_CHEAT_SECRET_2024"; // not used for key obfuscation now
 const ADMIN_USER = "tempest";
 const ADMIN_PASS = "20Rudd09"; // change this
 
@@ -31,54 +30,46 @@ function auth(req, res, next) {
     return res.status(401).json({ error: 'Invalid credentials' });
 }
 
-// Generate key with Tempest- prefix
+// Generate short random key with prefix
 app.post('/api/generate-key', auth, (req, res) => {
     const { durationMs } = req.body;
     if (!durationMs || durationMs < 60000) return res.status(400).json({ error: 'Invalid duration' });
 
-    const id = crypto.randomBytes(4).toString('hex');
-    const payload = JSON.stringify({ id, duration: durationMs, checksum: checksum(id + '|' + durationMs) });
-    let obfuscated = '';
-    for (let i = 0; i < payload.length; i++) {
-        obfuscated += String.fromCharCode(payload.charCodeAt(i) ^ SECRET.charCodeAt(i % SECRET.length));
-    }
-    const base64Part = Buffer.from(obfuscated).toString('base64').replace(/=+$/, '');
-    const key = 'Tempest-' + base64Part;
+    const randomPart = crypto.randomBytes(6).toString('base64url'); // 8 chars
+    const key = 'Tempest-' + randomPart;
 
     const db = loadDB();
-    db.keys.push({ id, fullKey: key, created: Date.now(), duration: durationMs, revoked: false });
+    db.keys.push({
+        id: randomPart,
+        fullKey: key,
+        created: Date.now(),
+        duration: durationMs,
+        revoked: false,
+        activatedAt: null
+    });
     saveDB(db);
+
     res.json({ key, expiresIn: durationMs });
 });
 
-// Validate key
+// Validate key (lookup exact key)
 app.get('/api/validate-key', (req, res) => {
-    let { key } = req.query;
+    const { key } = req.query;
     if (!key) return res.status(400).json({ error: 'Missing key' });
-    if (key.startsWith('Tempest-')) key = key.slice('Tempest-'.length);
-
-    let decoded;
-    try {
-        const obfuscated = Buffer.from(key, 'base64').toString();
-        let payload = '';
-        for (let i = 0; i < obfuscated.length; i++)
-            payload += String.fromCharCode(obfuscated.charCodeAt(i) ^ SECRET.charCodeAt(i % SECRET.length));
-        decoded = JSON.parse(payload);
-    } catch(e) { return res.json({ valid: false, reason: 'Invalid key' }); }
-
-    const { id, duration, checksum: storedChecksum } = decoded;
-    if (checksum(id + '|' + duration) !== storedChecksum) return res.json({ valid: false, reason: 'Invalid key' });
 
     const db = loadDB();
-    const keyData = db.keys.find(k => k.id === id);
-    if (!keyData) return res.json({ valid: false, reason: 'Key not found' });
+    const keyData = db.keys.find(k => k.fullKey === key);
+    if (!keyData) return res.json({ valid: false, reason: 'Invalid key' });
     if (keyData.revoked) return res.json({ valid: false, reason: 'Key revoked' });
 
-    if (!keyData.activatedAt) { keyData.activatedAt = Date.now(); saveDB(db); }
+    if (!keyData.activatedAt) {
+        keyData.activatedAt = Date.now();
+        saveDB(db);
+    }
     const elapsed = Date.now() - keyData.activatedAt;
-    if (elapsed > duration) return res.json({ valid: false, reason: 'Key expired' });
+    if (elapsed > keyData.duration) return res.json({ valid: false, reason: 'Key expired' });
 
-    res.json({ valid: true, remainingMs: duration - elapsed });
+    res.json({ valid: true, remainingMs: keyData.duration - elapsed });
 });
 
 // Revoke key
@@ -97,11 +88,11 @@ app.get('/api/keys', auth, (req, res) => {
     const db = loadDB();
     const keys = db.keys.map(k => ({
         id: k.id,
-        fullKey: k.fullKey || null,
+        fullKey: k.fullKey,
         created: k.created,
         duration: k.duration,
         revoked: k.revoked,
-        activatedAt: k.activatedAt || null,
+        activatedAt: k.activatedAt,
         status: k.revoked ? 'revoked' : (k.activatedAt && Date.now() - k.activatedAt > k.duration) ? 'expired' : 'active'
     }));
     res.json(keys);
@@ -120,9 +111,3 @@ app.get('/script.user.js', (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-
-function checksum(str) {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) hash = (hash + str.charCodeAt(i) * (i + 1)) % 1000000007;
-    return hash;
-}
