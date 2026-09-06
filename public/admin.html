@@ -14,7 +14,7 @@
         .row { margin: 15px 0; }
         label { display: block; font-weight: bold; margin-bottom: 5px; color: #000; }
         input, select { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; }
-        button { width: 100%; padding: 10px; background: #3498db; color: white; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; margin-top: 10px; }
+        button { width: auto; padding: 10px 20px; background: #3498db; color: white; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; margin-top: 10px; }
         button:hover { background: #2980b9; }
         #keyOutput { background: #eaf2f8; padding: 10px; border-radius: 5px; word-break: break-all; font-family: monospace; margin-top: 10px; }
         table { width: 100%; border-collapse: collapse; }
@@ -25,6 +25,7 @@
         .active { color: green; }
         .error { color: red; }
         .full-key { font-family: monospace; font-size: 12px; }
+        .logout-btn { float: right; background: #e74c3c; }
     </style>
 </head>
 <body>
@@ -37,6 +38,7 @@
             <p class="error" id="loginError"></p>
         </div>
         <div id="mainSection" style="display:none;">
+            <button class="logout-btn" onclick="logout()">Logout</button>
             <div class="tab">
                 <button class="tablinks active" onclick="openTab(event, 'generator')">Generate Key</button>
                 <button class="tablinks" onclick="openTab(event, 'history')">Key History</button>
@@ -60,16 +62,75 @@
             </div>
         </div>
     </div>
+
     <script>
         let authToken = localStorage.getItem('authToken') || '';
-        function login() { const u = document.getElementById('username').value; const p = document.getElementById('password').value; authToken = btoa(`${u}:${p}`); localStorage.setItem('authToken', authToken); showMain(); }
-        function showMain() { document.getElementById('loginSection').style.display='none'; document.getElementById('mainSection').style.display='block'; refreshHistory(); }
-        function openTab(evt, tabName) { const tc = document.getElementsByClassName('tabcontent'); for(let i=0;i<tc.length;i++) tc[i].style.display='none'; const tl=document.getElementsByClassName('tablinks'); for(let i=0;i<tl.length;i++) tl[i].className = tl[i].className.replace(' active',''); document.getElementById(tabName).style.display='block'; evt.currentTarget.className += ' active'; }
-        async function apiRequest(endpoint, method='GET', body=null) { const headers={'Authorization':`Bearer ${authToken}`,'Content-Type':'application/json'}; const res = await fetch(endpoint,{method,headers,body:body?JSON.stringify(body):null}); if(res.status===401){alert('Unauthorized'); return null;} return await res.json(); }
-        async function generateKey() { const duration=parseInt(document.getElementById('duration').value); const unit=document.getElementById('unit').value; if(!duration||duration<1){alert('Enter valid duration');return;} const msPerUnit={minutes:60000,hours:3600000,days:86400000}; const durationMs=duration*msPerUnit[unit]; const result=await apiRequest('/api/generate-key','POST',{durationMs}); if(result&&result.key){document.getElementById('keyOutput').innerHTML=`<strong>Your key:</strong><br><span class="full-key">${result.key}</span>`; refreshHistory();} else alert('Error generating key'); }
-        async function refreshHistory() { const keys=await apiRequest('/api/keys'); if(!keys) return; const table=document.getElementById('keyTable'); table.innerHTML='<tr><th>Short ID</th><th>Full Key</th><th>Created</th><th>Duration</th><th>Status</th><th>Action</th></tr>'; keys.forEach(k=>{ const row=table.insertRow(); const status=k.revoked?'revoked':(k.status==='expired'?'expired':'active'); row.innerHTML=`<td>${k.id.slice(0,8)}...</td><td class="full-key">${k.fullKey||'N/A'}</td><td>${new Date(k.created).toLocaleString()}</td><td>${(k.duration/60000).toFixed(0)} min</td><td class="${status}">${status}</td><td>${k.revoked?'':`<button onclick="revokeKey('${k.id}')">Delete</button>`}</td>`; }); }
-        async function revokeKey(id) { await apiRequest('/api/revoke-key','POST',{keyId:id}); refreshHistory(); }
-        async function clearKeys() { if(confirm('Are you sure you want to delete ALL keys?')) { await apiRequest('/api/clear-keys','GET'); refreshHistory(); } }
+
+        function login() {
+            const u = document.getElementById('username').value;
+            const p = document.getElementById('password').value;
+            authToken = btoa(`${u}:${p}`);
+            localStorage.setItem('authToken', authToken);
+            showMain();
+        }
+        function logout() {
+            localStorage.removeItem('authToken');
+            authToken = '';
+            document.getElementById('mainSection').style.display = 'none';
+            document.getElementById('loginSection').style.display = 'block';
+        }
+        function showMain() {
+            document.getElementById('loginSection').style.display = 'none';
+            document.getElementById('mainSection').style.display = 'block';
+            refreshHistory();
+        }
+        function openTab(evt, tabName) {
+            const tc = document.getElementsByClassName('tabcontent');
+            for(let i=0;i<tc.length;i++) tc[i].style.display = 'none';
+            const tl = document.getElementsByClassName('tablinks');
+            for(let i=0;i<tl.length;i++) tl[i].className = tl[i].className.replace(' active','');
+            document.getElementById(tabName).style.display = 'block';
+            evt.currentTarget.className += ' active';
+        }
+        async function apiRequest(endpoint, method='GET', body=null) {
+            const headers = {'Authorization': `Bearer ${authToken}`, 'Content-Type': 'application/json'};
+            const res = await fetch(endpoint, {method, headers, body: body?JSON.stringify(body):null});
+            if (res.status === 401) { alert('Unauthorized'); return null; }
+            return await res.json();
+        }
+        async function generateKey() {
+            const duration = parseInt(document.getElementById('duration').value);
+            const unit = document.getElementById('unit').value;
+            if(!duration || duration < 1){ alert('Enter valid duration'); return; }
+            const msPerUnit = {minutes:60000, hours:3600000, days:86400000};
+            const durationMs = duration * msPerUnit[unit];
+            const result = await apiRequest('/api/generate-key','POST',{durationMs});
+            if(result && result.key){
+                document.getElementById('keyOutput').innerHTML = `<strong>Your key:</strong><br><span class="full-key">${result.key}</span>`;
+                refreshHistory();
+            } else { alert('Error generating key'); }
+        }
+        async function refreshHistory() {
+            const keys = await apiRequest('/api/keys');
+            if(!keys) return;
+            const table = document.getElementById('keyTable');
+            table.innerHTML = '<tr><th>Short ID</th><th>Full Key</th><th>Created</th><th>Duration</th><th>Status</th><th>Action</th></tr>';
+            keys.forEach(k => {
+                const row = table.insertRow();
+                const status = k.revoked ? 'revoked' : (k.status === 'expired' ? 'expired' : 'active');
+                row.innerHTML = `<td>${k.id.slice(0,8)}...</td><td class="full-key">${k.fullKey}</td><td>${new Date(k.created).toLocaleString()}</td><td>${(k.duration/60000).toFixed(0)} min</td><td class="${status}">${status}</td><td>${k.revoked ? '' : `<button onclick="revokeKey('${k.id}')">Delete</button>`}</td>`;
+            });
+        }
+        async function revokeKey(id) {
+            await apiRequest('/api/revoke-key','POST',{keyId:id});
+            refreshHistory();
+        }
+        async function clearKeys() {
+            if(confirm('Are you sure you want to delete ALL keys?')) {
+                await apiRequest('/api/clear-keys','GET');
+                refreshHistory();
+            }
+        }
         if(authToken) showMain();
     </script>
 </body>
