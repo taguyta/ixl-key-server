@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IXL Auto Answerer
 // @namespace    http://tampermonkey.net/
-// @version      16.24
-// @description  Auto answer IXL with server-validated license key, draggable panel, skip visual, area-restricted, mandatory update overlay
+// @version      16.26
+// @description  Auto answer IXL with server-validated license key, draggable panel, visual cube counting via DOM
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -22,7 +22,7 @@
     const GROQ_API_KEY = "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";
     const MODEL = "groq/compound";
     const SERVER = "https://ixl-key-server.onrender.com";
-    const VERSION = "16.24";
+    const VERSION = "16.26";
 
     let licenseKey = GM_getValue('license_key', '');
     let running = false;
@@ -49,14 +49,12 @@
         #update-overlay button { margin: 10px; padding: 10px 20px; background: #e74c3c; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }
     `);
 
-    // Loader
     const loader = document.createElement('div');
     loader.id = 'ixl-loader';
     loader.innerHTML = `<input type="text" id="ixl-key" placeholder="Enter License Key"><button id="ixl-activate" type="button">Activate</button>`;
     document.body.appendChild(loader);
     if (licenseKey) document.getElementById('ixl-key').value = licenseKey;
 
-    // Panel
     const panel = document.createElement('div');
     panel.id = 'ixl-panel';
     panel.innerHTML = `
@@ -68,7 +66,6 @@
     `;
     document.body.appendChild(panel);
 
-    // Dragging
     const dragHandle = panel.querySelector('.drag-handle');
     let isDragging = false, dragOffsetX = 0, dragOffsetY = 0;
     dragHandle.addEventListener('pointerdown', e => {
@@ -88,7 +85,13 @@
     dragHandle.addEventListener('pointerup', e => { isDragging = false; dragHandle.releasePointerCapture(e.pointerId); });
     dragHandle.addEventListener('pointercancel', e => { isDragging = false; });
 
-    // Update check
+    function log(msg) {
+        const d = document.getElementById('ixl-log');
+        d.textContent += '\n[' + new Date().toLocaleTimeString() + '] ' + msg;
+        d.scrollTop = d.scrollHeight;
+        console.log('[IXL] ' + msg);
+    }
+
     async function checkForUpdates() {
         try {
             const response = await new Promise((resolve, reject) => {
@@ -132,9 +135,6 @@
     }
 
     setInterval(checkForUpdates, 5 * 60 * 1000);
-
-    // All other functions (validateKey, solveBasicMath, getQuestion, getAnswerChoices, clickByAnswerText, inputDigits, clickSubmit, clickNext, getAIChoiceIndex, getAIAnswer, isVisualQuestion, runLoop, updateUI)
-    // are identical to the previous v16.23 script. I will paste them here for completeness.
 
     async function validateKey(key) {
         if (!key) { alert('Please enter a license key.'); return false; }
@@ -196,14 +196,10 @@
         return document.body;
     }
 
-    function normalizeMinus(s) {
-        return s.replace(/[\u2013\u2014\u2212]/g, '-');
-    }
-
+    function normalizeMinus(s) { return s.replace(/[\u2013\u2014\u2212]/g, '-'); }
     function extractNumbers(text) {
         const normalized = normalizeMinus(text);
-        const matches = normalized.match(/-?\d+(?:\.\d+)?/g);
-        return matches ? matches.map(Number) : [];
+        return (normalized.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
     }
 
     function getAnswerChoices() {
@@ -213,9 +209,7 @@
         for (const el of all) {
             if (el.offsetParent === null || el.closest('#ixl-panel') || el.closest('#ixl-loader')) continue;
             let text = normalizeMinus((el.innerText || el.textContent || '').trim());
-            if (el.tagName === 'INPUT' && el.type === 'radio') {
-                text = normalizeMinus(el.value || el.getAttribute('aria-label') || '');
-            }
+            if (el.tagName === 'INPUT' && el.type === 'radio') text = normalizeMinus(el.value || el.getAttribute('aria-label') || '');
             if (!text || text.length > 200) continue;
             if (text.includes('}{') || text.includes('){')) {
                 const parts = text.split(/(?<=\))(?=\{)|(?<=\})(?=\{)/);
@@ -238,9 +232,7 @@
         for (const el of all) {
             if (el.offsetParent === null || el.closest('#ixl-panel') || el.closest('#ixl-loader')) continue;
             let text = normalizeMinus((el.innerText || el.textContent || '').trim());
-            if (el.tagName === 'INPUT' && el.type === 'radio') {
-                text = normalizeMinus(el.value || el.getAttribute('aria-label') || '');
-            }
+            if (el.tagName === 'INPUT' && el.type === 'radio') text = normalizeMinus(el.value || el.getAttribute('aria-label') || '');
             if (!text) continue;
             const textNums = extractNumbers(text);
             if (text.replace(/\s+/g,'').toLowerCase() === ans.replace(/\s+/g,'').toLowerCase()) {
@@ -300,13 +292,87 @@
         }
     }
 
-    function clickNext() {
+    function clickNextOrSkip() {
         const docs = getAllDocuments();
         for (const doc of docs) {
-            const next = [...doc.querySelectorAll('button')].find(b => b.offsetParent && /next|continue|ok|close/i.test(b.textContent));
-            if (next) { next.click(); return true; }
+            const buttons = doc.querySelectorAll('button, [role="button"], a');
+            for (const b of buttons) {
+                if (!b.offsetParent) continue;
+                const text = (b.innerText || b.textContent || b.getAttribute('aria-label') || '').toLowerCase();
+                if (/next|skip|continue|forward|arrow|»|>/.test(text)) {
+                    log(`Clicking skip/next: ${text}`);
+                    b.click();
+                    return true;
+                }
+            }
+            const iconSelectors = '.icon-next, .icon-skip, .icon-forward, .fa-arrow-right, .fa-chevron-right, .fa-forward';
+            const icons = doc.querySelectorAll(iconSelectors);
+            for (const icon of icons) {
+                if (icon.offsetParent) {
+                    icon.click();
+                    log('Clicked icon for next/skip');
+                    return true;
+                }
+            }
         }
         return false;
+    }
+
+    function isVisualQuestion(questionText) {
+        return /shown|cube|picture|graph|figure|tens|ones|base[- ]ten|count the/i.test(questionText);
+    }
+
+    // === NEW: Count cubes from DOM ===
+    function countCubesFromDOM() {
+        const area = getQuestionArea();
+        // Try to find elements that represent cubes/units
+        const cubeSelectors = [
+            '[class*="cube"]',
+            '[class*="unit"]',
+            '[class*="one"]',
+            '[class*="block"]',
+            '[class*="rod"]',  // a rod = 10 cubes, but we count individual cubes? we need total value, not count elements.
+            '[class*="ten"]',
+            '[class*="hundred"]',
+            '[class*="flat"]',
+            '[class*="small-cube"]'
+        ];
+        let totalValue = 0;
+        let found = false;
+
+        // Look for elements with aria-label or title indicating value
+        const allEls = area.querySelectorAll('*');
+        for (const el of allEls) {
+            if (el.offsetParent === null) continue;
+            const aria = el.getAttribute('aria-label') || el.getAttribute('title') || '';
+            if (!aria) continue;
+            const num = parseInt(aria);
+            if (!isNaN(num)) {
+                totalValue += num;
+                found = true;
+                log('Found element with value: ' + aria + ' = ' + num);
+            }
+        }
+
+        // Also try to count SVG images? maybe class names like "cube-1", etc.
+        if (!found) {
+            // Count number of small cube images
+            const cubeImgs = area.querySelectorAll('img, svg');
+            // Heuristic: count images that are small (likely cubes)
+            let cubeCount = 0;
+            for (const img of cubeImgs) {
+                if (img.offsetParent === null) continue;
+                const rect = img.getBoundingClientRect();
+                if (rect.width < 100 && rect.height < 100) cubeCount++;
+            }
+            if (cubeCount > 0) {
+                totalValue = cubeCount;
+                found = true;
+                log('Counted ' + cubeCount + ' small images as cubes');
+            }
+        }
+
+        return found ? totalValue.toString() : null;
     }
 
     async function getAIChoiceIndex(question, choices) {
@@ -343,32 +409,55 @@
         });
     }
 
-    function isVisualQuestion(questionText) {
-        return /shown|cube|picture|graph|figure|tens|ones|base[- ]ten|count the/i.test(questionText);
-    }
-
     async function runLoop() {
         while (running) {
             const q = getQuestion();
             if (!q) { log('No question'); await sleep(2000); continue; }
             if (q === lastQuestion) {
                 sameQuestionStreak++;
-                if (sameQuestionStreak >= 3) { log('Stuck on same question. Stopping.'); running=false; updateUI(); break; }
+                if (sameQuestionStreak >= 5) {
+                    log('Stuck on same question. Trying skip...');
+                    if (!clickNextOrSkip()) {
+                        log('No skip button found. Waiting 10 seconds...');
+                        await sleep(10000);
+                    }
+                    sameQuestionStreak = 0;
+                }
             } else {
                 sameQuestionStreak = 0;
                 lastQuestion = q;
             }
             log('Question: ' + q.substring(0,80));
 
+            // Visual cube counting
+            if (/cube/i.test(q) && /shown/i.test(q)) {
+                log('Cube counting question detected.');
+                const cubeValue = countCubesFromDOM();
+                if (cubeValue) {
+                    log('Counted cubes value: ' + cubeValue);
+                    if (inputDigits(cubeValue)) {
+                        questionCount++;
+                        log('Answered ' + questionCount);
+                        await sleep(2500);
+                        if (!clickNextOrSkip()) await sleep(1000);
+                        continue;
+                    }
+                }
+                log('Could not count cubes, trying to skip...');
+                if (clickNextOrSkip()) await sleep(2000);
+                else await sleep(5000);
+                continue;
+            }
+
+            // General visual question skip
             if (isVisualQuestion(q)) {
-                log('Visual question detected, skipping.');
-                await sleep(2000);
-                clickNext();
+                log('Visual question detected, attempting to skip...');
+                if (clickNextOrSkip()) await sleep(2000);
+                else await sleep(5000);
                 continue;
             }
 
             let answered = false;
-            // Basic math
             let ans = solveBasicMath(q);
             if (ans) {
                 const choices = getAnswerChoices();
@@ -382,7 +471,6 @@
                     answered = inputDigits(ans);
                 }
             } else {
-                // Use AI
                 const choices = getAnswerChoices();
                 if (choices.length > 0) {
                     const idx = await getAIChoiceIndex(q, choices);
@@ -401,11 +489,11 @@
                 questionCount++;
                 log('Answered ' + questionCount);
                 await sleep(2500);
-                if (!clickNext()) await sleep(1000);
+                if (!clickNextOrSkip()) await sleep(1000);
             } else {
                 log('Could not answer, trying next...');
                 await sleep(2000);
-                clickNext();
+                clickNextOrSkip();
             }
         }
         log('Stopped.');
@@ -424,13 +512,6 @@
         updateUI();
         if (running) runLoop();
     });
-
-    function log(msg) {
-        const d = document.getElementById('ixl-log');
-        d.textContent += '\n[' + new Date().toLocaleTimeString() + '] ' + msg;
-        d.scrollTop = d.scrollHeight;
-        console.log('[IXL] ' + msg);
-    }
 
     function sleep(ms) { return new Promise(r=>setTimeout(r,ms)); }
     log('Panel ready. Enter license key.');
