@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Tempest Hub
 // @namespace    http://tampermonkey.net/
-// @version      18.0
-// @description  Multi-cheat hub for school platforms. License required.
+// @version      18.1
+// @description  Multi-cheat hub for school platforms. License required. Enhanced answer extraction.
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -23,12 +23,12 @@
     const GROQ_API_KEY = "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";
     const MODEL = "groq/compound";
     const SERVER = "https://ixl-key-server.onrender.com";
-    const VERSION = "18.0";
+    const VERSION = "18.1";
 
     // ==================== STATE ====================
     let licenseKey = GM_getValue('license_key', '');
-    let activeCheat = null;                 // Currently selected cheat module name
-    let running = false;                    // Whether current cheat is running
+    let activeCheat = null;
+    let running = false;
     let questionCount = 0;
     let sameQuestionStreak = 0;
     let lastQuestion = '';
@@ -39,22 +39,20 @@
     let panelTextColor = GM_getValue('panelTextColor', '#ffffff');
     let snowEnabled = GM_getValue('snowEnabled', false);
 
+    // Network interception
+    let interceptedAnswers = [];   // store extracted answers or hints
+
     // ==================== STYLES ====================
     GM_addStyle(`
-        /* Loader */
         #ixl-loader { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 999998; background: #2c3e50; color: #fff; padding: 20px 30px; border-radius: 10px; font-family: Arial; box-shadow: 0 0 20px rgba(0,0,0,0.5); width: 400px; max-width: 90%; display: flex; align-items: center; gap: 10px; }
         #ixl-loader input { flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 5px; font-size: 14px; }
         #ixl-loader button { padding: 10px 20px; background: #3498db; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
-
-        /* Hub */
         #tempest-hub { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 999999; background: #2c3e50; color: #fff; padding: 25px; border-radius: 15px; font-family: Arial; box-shadow: 0 0 30px rgba(0,0,0,0.6); width: 350px; display: none; }
         #tempest-hub.show { display: block; }
         #tempest-hub h2 { margin: 0 0 15px; text-align: center; color: #3498db; }
         .hub-btn { display: block; width: 100%; padding: 12px; margin-bottom: 10px; background: #3498db; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 16px; transition: background 0.3s; }
         .hub-btn:hover { background: #2980b9; }
         .hub-btn:disabled { background: #7f8c8d; cursor: not-allowed; }
-
-        /* Main cheat panel */
         #ixl-panel { position: fixed; top: 10px; right: 10px; z-index: 999999; color: ${panelTextColor}; background: ${panelBgColor}; padding: 15px; border-radius: 10px; font-family: Arial; width: 340px; box-shadow: 0 0 20px rgba(0,0,0,0.5); display: none; overflow: hidden; }
         #ixl-panel.show { display: block; }
         #ixl-status { text-align: center; padding: 5px; background: #c0392b; border-radius: 3px; margin-bottom: 8px; font-weight: bold; }
@@ -63,28 +61,76 @@
         #ixl-log { background: #34495e; height: 150px; overflow-y: auto; font-size: 12px; padding: 8px; margin-top: 8px; white-space: pre-wrap; color: #fff; }
         #ixl-panel .drag-handle { cursor: move; background: #1a252f; padding: 8px 15px; margin: -15px -15px 10px -15px; border-radius: 10px 10px 0 0; user-select: none; display: flex; align-items: center; justify-content: space-between; touch-action: none; color: #3498db; }
         #ixl-panel .drag-handle h3 { margin: 0; color: #3498db; font-size: 16px; }
-
-        /* Settings */
         #settings-btn { position: absolute; top: 10px; right: 10px; background: none; border: none; color: inherit; cursor: pointer; font-size: 20px; z-index: 1000001; }
         #settings-area { display: none; margin-top: 10px; padding: 10px; background: rgba(255,255,255,0.1); border-radius: 5px; }
         #settings-area.show { display: block; }
         .settings-row { margin: 8px 0; }
         .settings-row label { display: inline-block; width: 100px; color: inherit; }
         .settings-row input[type="color"] { width: 50px; height: 30px; padding: 0; border: none; background: none; }
-
-        /* Snow effect */
         .snowflake { position: absolute; color: #fff; user-select: none; pointer-events: none; animation: fall linear infinite; }
         @keyframes fall {
             0% { transform: translateY(-10px) rotate(0deg); opacity: 1; }
             100% { transform: translateY(calc(100% + 20px)) rotate(360deg); opacity: 0; }
         }
-
-        /* Update overlay */
         #update-banner { background: #e67e22; color: #fff; padding: 8px; text-align: center; font-size: 13px; display: none; cursor: pointer; }
         #update-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000000; display: flex; justify-content: center; align-items: center; font-family: Arial; }
         #update-overlay .box { background: #fff; color: #000; padding: 30px; border-radius: 10px; text-align: center; max-width: 400px; }
         #update-overlay button { margin: 10px; padding: 10px 20px; background: #e74c3c; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }
     `);
+
+    // ==================== NETWORK INTERCEPTION ====================
+    function installNetworkHooks() {
+        const originalFetch = window.fetch;
+        window.fetch = async function(...args) {
+            const response = await originalFetch.apply(this, args);
+            const cloned = response.clone();
+            try {
+                const text = await cloned.text();
+                // Look for answer-related keywords in JSON responses
+                if (text.includes('"answer"') || text.includes('"correct"') || text.includes('"solution"')) {
+                    console.log('[Tempest] Intercepted fetch:', args[0], text.substring(0, 500));
+                    extractPossibleAnswers(text);
+                }
+            } catch(e) {}
+            return response;
+        };
+
+        const origXHROpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+            this.addEventListener('load', function() {
+                try {
+                    if (this.responseText && (this.responseText.includes('"answer"') || this.responseText.includes('"correct"') || this.responseText.includes('"solution"'))) {
+                        console.log('[Tempest] XHR response:', url, this.responseText.substring(0, 500));
+                        extractPossibleAnswers(this.responseText);
+                    }
+                } catch(e) {}
+            });
+            origXHROpen.call(this, method, url, ...rest);
+        };
+    }
+
+    function extractPossibleAnswers(text) {
+        try {
+            const data = JSON.parse(text);
+            // Recursively search for keys containing 'answer' or 'correct'
+            function search(obj) {
+                if (!obj || typeof obj !== 'object') return;
+                for (const key in obj) {
+                    const value = obj[key];
+                    if (typeof value === 'string' && /answer|correct|solution/i.test(key)) {
+                        interceptedAnswers.push(value);
+                        console.log('[Tempest] Found answer:', value);
+                    } else if (typeof value === 'object') {
+                        search(value);
+                    }
+                }
+            }
+            search(data);
+        } catch(e) {}
+    }
+
+    // Install hooks early
+    installNetworkHooks();
 
     // ==================== LOADER ====================
     const loader = document.createElement('div');
@@ -288,7 +334,7 @@
         lastQuestion = '';
     }
 
-    // ==================== IXL MODULE (all subjects) ====================
+    // ==================== IXL MODULE ====================
     function getAllDocuments() {
         const docs = [document];
         const iframes = document.querySelectorAll('iframe');
@@ -454,13 +500,86 @@
         return /shown|cube|picture|graph|figure|tens|ones|base[- ]ten|count the/i.test(questionText);
     }
 
-    function solveBasicMath(q) {
-        const m = q.match(/^(Add|Subtract|Multiply|Divide|Evaluate)\.?\s+([\d,]+)\s*([+\-*/])\s*([\d,]+)/i);
-        if (!m) return null;
-        const a = parseFloat(m[2].replace(/,/g,'')), b = parseFloat(m[4].replace(/,/g,''));
-        let r;
-        switch(m[3]) { case '+': r=a+b; break; case '-': r=a-b; break; case '*': r=a*b; break; case '/': r=a/b; break; default: return null; }
-        return r % 1 === 0 ? r.toString() : r.toFixed(2).replace(/\.?0+$/,'');
+    // Enhanced cube counting using multiple methods
+    function countCubesFromDOM() {
+        const area = getQuestionArea();
+        let total = 0;
+        let found = false;
+
+        // Check intercepted answers first
+        if (interceptedAnswers.length > 0) {
+            const lastAns = interceptedAnswers[interceptedAnswers.length - 1];
+            const num = parseInt(lastAns.replace(/,/g, ''));
+            if (!isNaN(num)) {
+                log('Using intercepted answer: ' + num);
+                return num.toString();
+            }
+        }
+
+        // Method 1: Look for aria-label, title, alt attributes containing numbers
+        const allEls = area.querySelectorAll('*');
+        for (const el of allEls) {
+            if (el.offsetParent === null) continue;
+            const attrs = [el.getAttribute('aria-label'), el.getAttribute('title'), el.getAttribute('alt')];
+            for (const attr of attrs) {
+                if (!attr) continue;
+                // Direct number: "5 cubes"
+                const num = parseInt(attr.replace(/,/g, ''));
+                if (!isNaN(num)) {
+                    total += num;
+                    found = true;
+                    log('Found attr number: ' + attr + ' = ' + num);
+                    continue;
+                }
+                // Words: "5 ones", "2 tens"
+                const wordMatch = attr.match(/(\d+)\s*(ones?|tens?|hundreds?|thousands?)/i);
+                if (wordMatch) {
+                    const value = parseInt(wordMatch[1]);
+                    const unit = wordMatch[2].toLowerCase();
+                    let multiplier = 1;
+                    if (unit.includes('tens')) multiplier = 10;
+                    else if (unit.includes('hundreds')) multiplier = 100;
+                    else if (unit.includes('thousands')) multiplier = 1000;
+                    total += value * multiplier;
+                    found = true;
+                    log('Found unit in attribute: ' + attr + ' -> ' + value * multiplier);
+                }
+            }
+        }
+
+        // Method 2: SVG text numbers
+        const texts = area.querySelectorAll('svg text, svg tspan');
+        for (const t of texts) {
+            if (t.offsetParent === null) continue;
+            const txt = t.textContent.trim();
+            const num = parseInt(txt.replace(/,/g, ''));
+            if (!isNaN(num)) {
+                total += num;
+                found = true;
+                log('Found SVG text: ' + txt + ' = ' + num);
+            }
+        }
+
+        // Method 3: Image size classification
+        if (!found) {
+            const imgs = area.querySelectorAll('img, svg');
+            let onesCount = 0, tensCount = 0, hundredsCount = 0;
+            for (const img of imgs) {
+                if (img.offsetParent === null) continue;
+                const rect = img.getBoundingClientRect();
+                const areaPx = rect.width * rect.height;
+                if (areaPx < 2000) onesCount++;
+                else if (areaPx < 10000) tensCount++;
+                else hundredsCount++;
+            }
+            if (onesCount + tensCount + hundredsCount > 0) {
+                total = onesCount + tensCount * 10 + hundredsCount * 100;
+                found = true;
+                log(`Counted by size: ${onesCount} ones, ${tensCount} tens, ${hundredsCount} hundreds => ${total}`);
+            }
+        }
+
+        return found ? total.toString() : null;
     }
 
     async function getAIChoiceIndex(question, choices) {
@@ -514,6 +633,37 @@
             }
             log('Question: ' + q.substring(0,80));
 
+            // Visual cube counting
+            if (/cube/i.test(q) && /shown/i.test(q)) {
+                log('Cube counting question detected.');
+                const cubeValue = countCubesFromDOM();
+                if (cubeValue) {
+                    log('Counted cubes value: ' + cubeValue);
+                    if (inputDigits(cubeValue)) {
+                        questionCount++;
+                        log('Answered ' + questionCount);
+                        await sleep(2500);
+                        if (!clickNextOrSkip()) await sleep(1000);
+                        continue;
+                    }
+                }
+                log('Cube count failed, trying AI...');
+                // Fallback: ask AI with question text only (may not work)
+                const aiAns = await getAIAnswer(q);
+                if (aiAns && aiAns !== 'SKIP' && inputDigits(aiAns)) {
+                    questionCount++;
+                    log('AI answered ' + questionCount);
+                    await sleep(2500);
+                    if (!clickNextOrSkip()) await sleep(1000);
+                    continue;
+                }
+                log('Could not solve cube, skipping...');
+                if (clickNextOrSkip()) await sleep(2000);
+                else await sleep(5000);
+                continue;
+            }
+
+            // General visual question skip
             if (isVisualQuestion(q)) {
                 log('Visual question detected, skipping...');
                 if (clickNextOrSkip()) await sleep(2000);
@@ -522,6 +672,9 @@
             }
 
             let answered = false;
+            // First check if we have intercepted answer that matches this question
+            // (We won't implement matching logic here, but you could store question+answer pairs)
+
             let ans = solveBasicMath(q);
             if (ans) {
                 const choices = getAnswerChoices();
@@ -560,6 +713,15 @@
                 clickNextOrSkip();
             }
         }
+    }
+
+    function solveBasicMath(q) {
+        const m = q.match(/^(Add|Subtract|Multiply|Divide|Evaluate)\.?\s+([\d,]+)\s*([+\-*/])\s*([\d,]+)/i);
+        if (!m) return null;
+        const a = parseFloat(m[2].replace(/,/g,'')), b = parseFloat(m[4].replace(/,/g,''));
+        let r;
+        switch(m[3]) { case '+': r=a+b; break; case '-': r=a-b; break; case '*': r=a*b; break; case '/': r=a/b; break; default: return null; }
+        return r % 1 === 0 ? r.toString() : r.toFixed(2).replace(/\.?0+$/,'');
     }
 
     function updateUI() {
