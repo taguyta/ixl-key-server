@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Tempest Hub
 // @namespace    http://tampermonkey.net/
-// @version      18.9
-// @description  Multi-cheat hub. License required. Runs at document-start with deferred UI initialization.
+// @version      18.11
+// @description  Multi-cheat hub. License required. Robust network answer capture via regex. Full script.
 // @match        https://www.ixl.com/*
 // @run-at       document-start
 // @grant        GM_xmlhttpRequest
@@ -24,7 +24,7 @@
     const GROQ_API_KEY = "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";
     const MODEL = "groq/compound";
     const SERVER = "https://ixl-key-server.onrender.com";
-    const VERSION = "18.9";
+    const VERSION = "18.11";
 
     // ==================== STATE ====================
     let licenseKey = GM_getValue('license_key', '');
@@ -43,42 +43,27 @@
     // Network interception storage
     let currentAnswerFromNetwork = null;
 
-    // ==================== NETWORK INTERCEPTION (immediate) ====================
-    function deepSearchForNumberBlocks(obj) {
-        if (!obj || typeof obj !== 'object') return null;
-        if (Array.isArray(obj.numberBlocksByDigits)) return obj.numberBlocksByDigits;
-        for (const key in obj) {
-            const res = deepSearchForNumberBlocks(obj[key]);
-            if (res) return res;
-        }
-        return null;
-    }
-
+    // ==================== NETWORK INTERCEPTION (regex based) ====================
     function extractAnswerFromText(text) {
-        try {
-            const data = JSON.parse(text);
-            const digits = deepSearchForNumberBlocks(data);
-            if (digits && digits.length > 0) {
-                const ans = digits.join('');
+        // Look for "numberBlocksByDigits":[3,1,6]
+        const regex = /"numberBlocksByDigits"\s*:\s*\[([^\]]+)\]/;
+        const match = text.match(regex);
+        if (match) {
+            const nums = match[1].split(',').map(s => s.trim()).filter(s => /^\d+$/.test(s));
+            if (nums.length > 0) {
+                const ans = nums.join('');
                 currentAnswerFromNetwork = ans;
-                console.log('[Tempest] Captured numberBlocksByDigits:', digits, '=>', ans);
+                console.log('[Tempest] Captured via regex:', nums, '=>', ans);
                 return;
             }
-            const searchObj = (obj) => {
-                if (!obj || typeof obj !== 'object') return;
-                for (const key in obj) {
-                    const val = obj[key];
-                    if (typeof val === 'string' && /^(answer|correct|solution)$/i.test(key)) {
-                        currentAnswerFromNetwork = val;
-                        console.log('[Tempest] Captured answer from key', key, ':', val);
-                        return;
-                    } else if (typeof val === 'object') {
-                        searchObj(val);
-                    }
-                }
-            };
-            searchObj(data);
-        } catch(e) {}
+        }
+        // Fallback: look for "answer":"..." or "correct":"..."
+        const ansRegex = /"(?:answer|correct|solution)"\s*:\s*"([^"]+)"/i;
+        const ansMatch = text.match(ansRegex);
+        if (ansMatch) {
+            currentAnswerFromNetwork = ansMatch[1];
+            console.log('[Tempest] Captured answer field:', currentAnswerFromNetwork);
+        }
     }
 
     function hookFetch() {
@@ -701,7 +686,6 @@
         initUI();
     } else {
         document.addEventListener('DOMContentLoaded', initUI);
-        // fallback if DOMContentLoaded already fired
         if (document.readyState === 'interactive' || document.readyState === 'complete') {
             initUI();
         }
