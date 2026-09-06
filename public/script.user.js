@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IXL Auto Answerer
 // @namespace    http://tampermonkey.net/
-// @version      16.21
-// @description  Auto answer IXL with server-validated license key, draggable panel, iframe support, robust choices
+// @version      16.22
+// @description  Auto answer IXL with server-validated license key, draggable panel, fixed submit without selection
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -22,7 +22,7 @@
     const GROQ_API_KEY = "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";
     const MODEL = "groq/compound";
     const SERVER = "https://ixl-key-server.onrender.com";
-    const VERSION = "16.21";
+    const VERSION = "16.22";
 
     let licenseKey = GM_getValue('license_key', '');
     let running = false;
@@ -30,7 +30,6 @@
     let sameQuestionStreak = 0;
     let lastQuestion = '';
 
-    // ---------- Styles (same as before) ----------
     GM_addStyle(`
         #ixl-loader { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 999998; background: #2c3e50; color: #fff; padding: 20px 30px; border-radius: 10px; font-family: Arial; box-shadow: 0 0 20px rgba(0,0,0,0.5); width: 400px; max-width: 90%; display: flex; align-items: center; gap: 10px; transition: all 0.5s ease; }
         #ixl-loader input { flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 5px; font-size: 14px; }
@@ -45,28 +44,12 @@
         #ixl-panel .drag-handle h3 { margin: 0; color: #3498db; font-size: 16px; }
     `);
 
-    // ---------- Helper: get all documents including iframes ----------
-    function getAllDocuments() {
-        const docs = [document];
-        const iframes = document.querySelectorAll('iframe');
-        for (const iframe of iframes) {
-            try {
-                if (iframe.contentDocument && iframe.contentDocument !== document) {
-                    docs.push(iframe.contentDocument);
-                }
-            } catch(e) {}
-        }
-        return docs;
-    }
-
-    // ---------- Loader ----------
     const loader = document.createElement('div');
     loader.id = 'ixl-loader';
     loader.innerHTML = `<input type="text" id="ixl-key" placeholder="Enter License Key"><button id="ixl-activate" type="button">Activate</button>`;
     document.body.appendChild(loader);
     if (licenseKey) document.getElementById('ixl-key').value = licenseKey;
 
-    // ---------- Panel ----------
     const panel = document.createElement('div');
     panel.id = 'ixl-panel';
     panel.innerHTML = `
@@ -77,7 +60,6 @@
     `;
     document.body.appendChild(panel);
 
-    // Drag
     const dragHandle = panel.querySelector('.drag-handle');
     let isDragging = false, dragOffsetX = 0, dragOffsetY = 0;
     dragHandle.addEventListener('pointerdown', e => {
@@ -147,6 +129,17 @@
         return '';
     }
 
+    function getAllDocuments() {
+        const docs = [document];
+        const iframes = document.querySelectorAll('iframe');
+        for (const iframe of iframes) {
+            try {
+                if (iframe.contentDocument) docs.push(iframe.contentDocument);
+            } catch(e) {}
+        }
+        return docs;
+    }
+
     function normalizeMinus(s) {
         return s.replace(/[\u2013\u2014\u2212]/g, '-');
     }
@@ -157,7 +150,6 @@
         return matches ? matches.map(Number) : [];
     }
 
-    // Updated getAnswerChoices to scan iframes and split concatenated sets
     function getAnswerChoices() {
         const choices = new Set();
         const docs = getAllDocuments();
@@ -166,13 +158,11 @@
             for (const el of all) {
                 if (el.offsetParent === null || el.closest('#ixl-panel') || el.closest('#ixl-loader')) continue;
                 let text = normalizeMinus((el.innerText || el.textContent || '').trim());
-                if (!text) continue;
-                // If element is an input radio, get its value or data
                 if (el.tagName === 'INPUT' && el.type === 'radio') {
                     text = normalizeMinus(el.value || el.getAttribute('aria-label') || '');
                 }
                 if (!text || text.length > 200) continue;
-                // Split if it contains multiple sets (indicated by '}{' or '){')
+                // Split concatenated sets
                 if (text.includes('}{') || text.includes('){')) {
                     const parts = text.split(/(?<=\))(?=\{)|(?<=\})(?=\{)/);
                     for (const part of parts) {
@@ -203,13 +193,11 @@
                 }
                 if (!text) continue;
                 const textNums = extractNumbers(text);
-                // Exact normalized text
                 if (text.replace(/\s+/g,'').toLowerCase() === ans.replace(/\s+/g,'').toLowerCase()) {
                     log(`Exact match: ${text}`);
                     el.click();
                     return true;
                 }
-                // Number set match (unordered)
                 if (ansNums.length > 0 && textNums.length === ansNums.length) {
                     const sortedAns = [...ansNums].sort((a,b)=>a-b);
                     const sortedText = [...textNums].sort((a,b)=>a-b);
@@ -224,33 +212,25 @@
         return false;
     }
 
-    function inputAnswer(ans) {
-        ans = String(ans).trim();
-        log('Attempting answer: ' + ans);
-        if (clickByAnswerText(ans)) {
-            log('Clicked answer');
-            setTimeout(() => clickSubmit(), 300);
-            return true;
-        }
-        // Digit boxes fallback
+    function inputDigits(ans) {
+        ans = normalizeMinus(String(ans).trim());
         const docs = getAllDocuments();
         for (const doc of docs) {
             const inputs = [...doc.querySelectorAll('input[type="text"], input[type="number"], input:not([type])')]
                 .filter(i => i.offsetParent !== null && !i.closest('#ixl-panel'));
             if (inputs.length > 0) {
                 if (inputs.length === 1) {
-                    inputs[0].value = normalizeMinus(ans).replace(/,/g,'');
+                    inputs[0].value = ans.replace(/,/g,'');
                     inputs[0].dispatchEvent(new Event('input',{bubbles:true}));
                     inputs[0].dispatchEvent(new Event('change',{bubbles:true}));
                 } else {
-                    const digits = normalizeMinus(ans).replace(/,/g,'').replace(/[^0-9]/g,'');
-                    if (!digits) continue;
+                    const digits = ans.replace(/,/g,'').replace(/[^0-9]/g,'');
+                    if (!digits) return false;
                     let str = digits;
                     if (str.length < inputs.length) str = ' '.repeat(inputs.length - str.length) + str;
                     if (str.length > inputs.length) str = str.slice(-inputs.length);
                     for (let i=0;i<inputs.length;i++) { inputs[i].value = str[i] === ' ' ? '' : str[i]; inputs[i].dispatchEvent(new Event('input',{bubbles:true})); inputs[i].dispatchEvent(new Event('change',{bubbles:true})); }
                 }
-                setTimeout(() => clickSubmit(), 700);
                 return true;
             }
         }
@@ -324,27 +304,41 @@
             log('Question: ' + q.substring(0,80));
 
             let answered = false;
-            // 1. Basic math
+            // Basic math first
             let ans = solveBasicMath(q);
-            if (ans) answered = inputAnswer(ans);
-            // 2. Multiple choice via AI
-            if (!answered) {
+            if (ans) {
+                // Check if multiple choice or digit input
                 const choices = getAnswerChoices();
-                log(`Found ${choices.length} choices`);
+                if (choices.length > 0) {
+                    answered = clickByAnswerText(ans);
+                    if (!answered) {
+                        // Try AI index if direct math wasn't a choice
+                        const idx = await getAIChoiceIndex(q, choices);
+                        if (idx >= 0) {
+                            answered = clickByAnswerText(choices[idx]);
+                        }
+                    }
+                } else {
+                    answered = inputDigits(ans);
+                }
+            } else {
+                // No basic math, use AI
+                const choices = getAnswerChoices();
                 if (choices.length > 0) {
                     const idx = await getAIChoiceIndex(q, choices);
                     if (idx >= 0) {
-                        const target = choices[idx];
-                        answered = clickByAnswerText(target);
-                        if (!answered) answered = inputAnswer(target);
-                        if (answered) setTimeout(clickSubmit, 300);
+                        answered = clickByAnswerText(choices[idx]);
                     }
-                }
-                // 3. Direct answer fallback
-                if (!answered) {
+                    if (!answered) {
+                        ans = await getAIAnswer(q);
+                        if (ans && ans !== 'SKIP') {
+                            answered = clickByAnswerText(ans);
+                        }
+                    }
+                } else {
                     ans = await getAIAnswer(q);
                     if (ans && ans !== 'SKIP') {
-                        answered = inputAnswer(ans);
+                        answered = inputDigits(ans);
                     }
                 }
             }
