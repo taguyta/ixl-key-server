@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         Tempest Hub
 // @namespace    http://tampermonkey.net/
-// @version      18.7
-// @description  Multi-cheat hub. License required. Enhanced network wait loop.
+// @version      18.8
+// @description  Multi-cheat hub. License required. Runs at document-start to capture network answers.
 // @match        https://www.ixl.com/*
+// @run-at       document-start
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @grant        GM_getValue
@@ -23,7 +24,7 @@
     const GROQ_API_KEY = "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";
     const MODEL = "groq/compound";
     const SERVER = "https://ixl-key-server.onrender.com";
-    const VERSION = "18.7";
+    const VERSION = "18.8";
 
     // ==================== STATE ====================
     let licenseKey = GM_getValue('license_key', '');
@@ -565,7 +566,7 @@
                 lastQuestion = q;
                 sameQuestionStreak = 0;
                 log('New question, waiting for network answer...');
-                const netAns = await waitForNetworkAnswer(4000);
+                const netAns = await waitForNetworkAnswer(5000);
                 if (netAns) {
                     log('Got network answer: ' + netAns);
                     let answered = false;
@@ -598,7 +599,6 @@
             // Fallback: visual cube counting
             if (/cube/i.test(q) && /shown/i.test(q)) {
                 log('Cube counting question detected.');
-                // Already waited for network; if still none, try AI
                 const aiAns = await getAIAnswer(q);
                 if (aiAns && aiAns !== 'SKIP' && inputDigits(aiAns)) {
                     questionCount++;
