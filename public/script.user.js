@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Tempest Hub
 // @namespace    http://tampermonkey.net/
-// @version      18.6
-// @description  Multi-cheat hub. License required. Robust network answer capture.
+// @version      18.7
+// @description  Multi-cheat hub. License required. Enhanced network wait loop.
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -23,7 +23,7 @@
     const GROQ_API_KEY = "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";
     const MODEL = "groq/compound";
     const SERVER = "https://ixl-key-server.onrender.com";
-    const VERSION = "18.6";
+    const VERSION = "18.7";
 
     // ==================== STATE ====================
     let licenseKey = GM_getValue('license_key', '');
@@ -546,6 +546,15 @@
         });
     }
 
+    async function waitForNetworkAnswer(timeoutMs = 5000) {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+            if (currentAnswerFromNetwork) return currentAnswerFromNetwork;
+            await sleep(200);
+        }
+        return null;
+    }
+
     async function runIXLLoop() {
         while (running) {
             const q = getQuestion();
@@ -555,7 +564,25 @@
                 currentAnswerFromNetwork = null;
                 lastQuestion = q;
                 sameQuestionStreak = 0;
-                await sleep(1000); // wait for network interception
+                log('New question, waiting for network answer...');
+                const netAns = await waitForNetworkAnswer(4000);
+                if (netAns) {
+                    log('Got network answer: ' + netAns);
+                    let answered = false;
+                    const choices = getAnswerChoices();
+                    if (choices.length > 0) {
+                        answered = clickByAnswerText(netAns);
+                    } else {
+                        answered = inputDigits(netAns);
+                    }
+                    if (answered) {
+                        questionCount++;
+                        log('Answered ' + questionCount);
+                        await sleep(2500);
+                        if (!clickNextOrSkip()) await sleep(1000);
+                        continue;
+                    }
+                }
             } else {
                 sameQuestionStreak++;
                 if (sameQuestionStreak >= 5) {
@@ -568,40 +595,10 @@
 
             log('Question: ' + q.substring(0,80));
 
-            // 1. Try network answer for any question
-            if (currentAnswerFromNetwork) {
-                log('Using network answer: ' + currentAnswerFromNetwork);
-                let answered = false;
-                const choices = getAnswerChoices();
-                if (choices.length > 0) {
-                    answered = clickByAnswerText(currentAnswerFromNetwork);
-                } else {
-                    answered = inputDigits(currentAnswerFromNetwork);
-                }
-                if (answered) {
-                    questionCount++;
-                    log('Answered ' + questionCount);
-                    await sleep(2500);
-                    if (!clickNextOrSkip()) await sleep(1000);
-                    continue;
-                }
-            }
-
-            // 2. Visual cube counting (if network answer not used)
+            // Fallback: visual cube counting
             if (/cube/i.test(q) && /shown/i.test(q)) {
                 log('Cube counting question detected.');
-                // try network again maybe after wait
-                if (!currentAnswerFromNetwork) await sleep(1000);
-                if (currentAnswerFromNetwork) {
-                    if (inputDigits(currentAnswerFromNetwork)) {
-                        questionCount++;
-                        log('Answered ' + questionCount);
-                        await sleep(2500);
-                        if (!clickNextOrSkip()) await sleep(1000);
-                        continue;
-                    }
-                }
-                log('Cube count failed, trying AI...');
+                // Already waited for network; if still none, try AI
                 const aiAns = await getAIAnswer(q);
                 if (aiAns && aiAns !== 'SKIP' && inputDigits(aiAns)) {
                     questionCount++;
@@ -616,7 +613,7 @@
                 continue;
             }
 
-            // 3. General visual question skip
+            // General visual question skip
             if (isVisualQuestion(q)) {
                 log('Visual question detected, skipping...');
                 if (clickNextOrSkip()) await sleep(2000);
@@ -624,7 +621,7 @@
                 continue;
             }
 
-            // 4. Fallback to basic math and AI
+            // Fallback to basic math and AI
             let answered = false;
             let ans = solveBasicMath(q);
             if (ans) {
