@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IXL Auto Answerer (Loader + Server Key + Auto Update + Arithmetic Solver)
 // @namespace    http://tampermonkey.net/
-// @version      16.7
+// @version      16.8
 // @description  Auto answer IXL with server-validated license key, simplified loader GUI, groq/compound model, mandatory updates, basic math solver
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
@@ -22,7 +22,7 @@
     const DEFAULT_MODEL = "groq/compound";
     const SERVER_URL = "https://ixl-key-server.onrender.com";
     const SECRET = "IXL_CHEAT_SECRET_2024";
-    const CURRENT_VERSION = "16.7";
+    const CURRENT_VERSION = "16.8";
 
     // ========== STATE ==========
     let autoAnswer = false;
@@ -116,472 +116,485 @@
         }
     `);
 
-    // ========== LOADER ==========
-    const loader = document.createElement('div');
-    loader.id = 'ixl-loader';
-    loader.innerHTML = `
-        <input type="text" id="ixl-license-input" placeholder="Enter License Key">
-        <button id="ixl-activate" type="button">Activate</button>
-    `;
-    document.body.appendChild(loader);
+    function init() {
+        // ========== LOADER ==========
+        const loader = document.createElement('div');
+        loader.id = 'ixl-loader';
+        loader.innerHTML = `
+            <input type="text" id="ixl-license-input" placeholder="Enter License Key">
+            <button id="ixl-activate" type="button">Activate</button>
+        `;
+        document.body.appendChild(loader);
 
-    // ========== MAIN PANEL ==========
-    const panel = document.createElement('div');
-    panel.id = 'ixl-cheat-panel';
-    panel.innerHTML = `
-        <div class="drag-handle"><h3>IXL Auto Answerer</h3><span style="cursor:move;font-size:18px;">⠿</span></div>
-        <div id="update-banner">Update available – click to install</div>
-        <div class="panel-content">
-            <div id="ixl-status">Status: OFF</div>
-            <div class="ixl-row"><button type="button" class="ixl-btn" id="ixl-toggle">Start</button></div>
-            <div id="ixl-log">Ready. Click Start to begin.</div>
-        </div>
-    `;
-    document.body.appendChild(panel);
-
-    // Load saved license key
-    if (licenseKey) {
-        document.getElementById('ixl-license-input').value = licenseKey;
-    }
-
-    // ========== DRAGGING ==========
-    const dragHandle = panel.querySelector('.drag-handle');
-    let isDragging = false, startX, startY, initialX, initialY;
-    dragHandle.addEventListener('mousedown', e => {
-        isDragging = true; startX = e.clientX; startY = e.clientY;
-        const r = panel.getBoundingClientRect(); initialX = r.left; initialY = r.top;
-        e.preventDefault();
-    });
-    document.addEventListener('mousemove', e => {
-        if (!isDragging) return;
-        panel.style.left = (initialX + e.clientX - startX) + 'px';
-        panel.style.top = (initialY + e.clientY - startY) + 'px';
-        panel.style.right = 'auto';
-    });
-    document.addEventListener('mouseup', () => isDragging = false);
-    dragHandle.addEventListener('dragstart', e => e.preventDefault());
-
-    function log(msg) {
-        const d = document.getElementById('ixl-log');
-        d.textContent += '\n[' + new Date().toLocaleTimeString() + '] ' + msg;
-        d.scrollTop = d.scrollHeight;
-        console.log('[IXL Cheat] ' + msg);
-    }
-
-    async function validateLicenseKey(key, showAlert = false) {
-        if (!key) { if (showAlert) alert('Please enter a license key.'); return false; }
-        try {
-            const response = await new Promise((resolve, reject) => {
-                GM_xmlhttpRequest({
-                    method: 'GET',
-                    url: `${SERVER_URL}/api/validate-key?key=${encodeURIComponent(key)}`,
-                    onload: resolve,
-                    onerror: reject,
-                    timeout: 10000
-                });
-            });
-            const data = JSON.parse(response.responseText);
-            if (!data.valid) {
-                if (showAlert) alert('License invalid: ' + data.reason);
-                else log('License invalid: ' + data.reason);
-                return false;
-            }
-            licenseKey = key;
-            GM_setValue('license_key', key);
-            if (showAlert) log('License OK, remaining: ' + Math.round(data.remainingMs / 60000) + ' min');
-            return true;
-        } catch (e) {
-            console.error(e);
-            if (showAlert) alert('Cannot reach server. Please check your internet connection.');
-            else log('Cannot reach server.');
-            return false;
-        }
-    }
-
-    // ========== ACTIVATE BUTTON (FIXED) ==========
-    const activateBtn = document.getElementById('ixl-activate');
-    activateBtn.onclick = async function() {
-        const key = document.getElementById('ixl-license-input').value.trim();
-        if (await validateLicenseKey(key, true)) {
-            loader.style.opacity = '0';
-            setTimeout(() => {
-                loader.style.display = 'none';
-                panel.classList.add('show');
-                log('Panel activated. Welcome!');
-                checkForUpdates();
-            }, 500);
-        }
-    };
-    // Also add event listener as backup
-    activateBtn.addEventListener('click', activateBtn.onclick);
-
-    // ========== UPDATE CHECK ==========
-    function showUpdateOverlay() {
-        if (document.getElementById('update-overlay')) return;
-        const overlay = document.createElement('div');
-        overlay.id = 'update-overlay';
-        overlay.innerHTML = `
-            <div class="box">
-                <h2>Update Required</h2>
-                <p>A new version of the IXL Auto Answerer is available. You must update to continue using the tool.</p>
-                <button id="update-now-btn">Update Now</button>
-                <button id="reload-after-update-btn">I've Updated – Reload</button>
+        // ========== MAIN PANEL ==========
+        const panel = document.createElement('div');
+        panel.id = 'ixl-cheat-panel';
+        panel.innerHTML = `
+            <div class="drag-handle"><h3>IXL Auto Answerer</h3><span style="cursor:move;font-size:18px;">⠿</span></div>
+            <div id="update-banner">Update available – click to install</div>
+            <div class="panel-content">
+                <div id="ixl-status">Status: OFF</div>
+                <div class="ixl-row"><button type="button" class="ixl-btn" id="ixl-toggle">Start</button></div>
+                <div id="ixl-log">Ready. Click Start to begin.</div>
             </div>
         `;
-        document.body.appendChild(overlay);
-        document.getElementById('update-now-btn').addEventListener('click', function() {
-            window.open(`${SERVER_URL}/script.user.js`, '_blank');
-            setTimeout(() => location.reload(), 10000);
-        });
-        document.getElementById('reload-after-update-btn').addEventListener('click', function() {
-            location.reload();
-        });
-    }
+        document.body.appendChild(panel);
 
-    async function checkForUpdates() {
-        try {
-            const response = await new Promise((resolve, reject) => {
-                GM_xmlhttpRequest({
-                    method: 'GET',
-                    url: `${SERVER_URL}/script.user.js?nocache=${Date.now()}`,
-                    onload: resolve,
-                    onerror: reject,
-                    timeout: 5000
+        // Load saved license key
+        if (licenseKey) {
+            document.getElementById('ixl-license-input').value = licenseKey;
+        }
+
+        // ========== DRAGGING ==========
+        const dragHandle = panel.querySelector('.drag-handle');
+        let isDragging = false, startX, startY, initialX, initialY;
+        dragHandle.addEventListener('mousedown', e => {
+            isDragging = true; startX = e.clientX; startY = e.clientY;
+            const r = panel.getBoundingClientRect(); initialX = r.left; initialY = r.top;
+            e.preventDefault();
+        });
+        document.addEventListener('mousemove', e => {
+            if (!isDragging) return;
+            panel.style.left = (initialX + e.clientX - startX) + 'px';
+            panel.style.top = (initialY + e.clientY - startY) + 'px';
+            panel.style.right = 'auto';
+        });
+        document.addEventListener('mouseup', () => isDragging = false);
+        dragHandle.addEventListener('dragstart', e => e.preventDefault());
+
+        function log(msg) {
+            const d = document.getElementById('ixl-log');
+            d.textContent += '\n[' + new Date().toLocaleTimeString() + '] ' + msg;
+            d.scrollTop = d.scrollHeight;
+            console.log('[IXL Cheat] ' + msg);
+        }
+
+        async function validateLicenseKey(key, showAlert = false) {
+            if (!key) { if (showAlert) alert('Please enter a license key.'); return false; }
+            try {
+                const response = await new Promise((resolve, reject) => {
+                    GM_xmlhttpRequest({
+                        method: 'GET',
+                        url: `${SERVER_URL}/api/validate-key?key=${encodeURIComponent(key)}`,
+                        onload: resolve,
+                        onerror: reject,
+                        timeout: 10000
+                    });
                 });
-            });
-            const scriptText = response.responseText;
-            const versionMatch = scriptText.match(/@version\s+([\d.]+)/);
-            if (versionMatch) {
-                const latestVersion = versionMatch[1];
-                if (latestVersion !== CURRENT_VERSION) {
-                    updateRequired = true;
-                    document.getElementById('ixl-toggle').disabled = true;
-                    showUpdateOverlay();
+                const data = JSON.parse(response.responseText);
+                if (!data.valid) {
+                    if (showAlert) alert('License invalid: ' + data.reason);
+                    else log('License invalid: ' + data.reason);
+                    return false;
                 }
-            }
-        } catch (e) { console.log('Update check failed:', e); }
-    }
-    setInterval(checkForUpdates, 5 * 60 * 1000);
-
-    // ========== ARITHMETIC SOLVER ==========
-    function solveBasicMath(questionText) {
-        let q = questionText.replace(/\b(Add|Subtract|Multiply|Divide)\.?\s*/gi, '');
-        q = q.replace(/,/g, '');
-        const match = q.match(/(-?\d+(?:\.\d+)?)\s*([+\-*/])\s*(-?\d+(?:\.\d+)?)/);
-        if (!match) return null;
-        const num1 = parseFloat(match[1]);
-        const op = match[2];
-        const num2 = parseFloat(match[3]);
-        let result;
-        switch (op) {
-            case '+': result = num1 + num2; break;
-            case '-': result = num1 - num2; break;
-            case '*': result = num1 * num2; break;
-            case '/': result = num1 / num2; break;
-            default: return null;
-        }
-        return result % 1 === 0 ? result.toString() : result.toFixed(2).replace(/\.?0+$/, '');
-    }
-
-    // ========== QUESTION EXTRACTION ==========
-    function getQuestionTextFromEl(el) {
-        let text = el.innerText || el.textContent || '';
-        text = text.replace(/\s+/g, ' ').trim();
-        text = text.replace(/(\d)\s+(?=\d)/g, '$1');
-        text = text.replace(/\s*,\s*(?=\d{3}(\D|$))/g, ',');
-        return text;
-    }
-
-    function extractQuestionFromDOM() {
-        const specificSelectors = [
-            '.question-component .question-text',
-            '.question-component',
-            '.crisp-question',
-            '.skill-practice-question',
-            '.question-text',
-            '.question'
-        ];
-        for (const sel of specificSelectors) {
-            const el = document.querySelector(sel);
-            if (el && el.textContent.trim()) {
-                const text = getQuestionTextFromEl(el);
-                if (text.length > 10 && text.length < 2000 && !/Play|Seek|video|Created with Snap|Learn with an example|Incomplete answer|You did not finish|SmartScore|Questions answered|Work it out|Not feeling ready|Company|Blog|Help center|User guides|Tell us what you think|Testimonia/i.test(text)) return text;
+                licenseKey = key;
+                GM_setValue('license_key', key);
+                if (showAlert) log('License OK, remaining: ' + Math.round(data.remainingMs / 60000) + ' min');
+                return true;
+            } catch (e) {
+                console.error(e);
+                if (showAlert) alert('Cannot reach server. Please check your internet connection.');
+                else log('Cannot reach server.');
+                return false;
             }
         }
-        const candidates = document.querySelectorAll('div, section, article, p, span, li');
-        let best = null, bestScore = 0;
-        for (const el of candidates) {
-            if (el.closest('#ixl-cheat-panel')) continue;
-            const text = getQuestionTextFromEl(el);
-            if (text.length < 20 || text.length > 5000) continue;
-            if (/Play|Seek|video|Created with Snap|Learn with an example|Incomplete answer|You did not finish|SmartScore|Questions answered|Work it out|Not feeling ready|Company|Blog|Help center|User guides|Tell us what you think|Testimonia/i.test(text)) continue;
-            let score = 0;
-            if (/[?=+\-*/^%]/.test(text)) score += 50;
-            if (/\d/.test(text)) score += 30;
-            if (/what|which|solve|find|calculate|simplify|evaluate|add|subtract|multiply|divide|domain|range/i.test(text)) score += 20;
-            if (text.length < 500) score += 20;
-            if (/question|skill|crisp|problem/i.test(el.className)) score += 100;
-            if (score > bestScore) { bestScore = score; best = el; }
-        }
-        return best ? getQuestionTextFromEl(best) : '';
-    }
 
-    function getQuestion() {
-        if (manualQuestionEl) {
-            const text = getQuestionTextFromEl(manualQuestionEl);
-            if (text) { log('Using manually picked element: ' + text.substring(0, 100)); return text; }
-        }
-        const text = extractQuestionFromDOM();
-        if (text) { log('Auto-detected: ' + text.substring(0, 100)); return text; }
-        log('No question found.');
-        return '';
-    }
-
-    // ========== CLEAN AI ANSWER ==========
-    function cleanAIAnswer(raw) {
-        let cleaned = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-        if (!cleaned) {
-            const numbers = raw.match(/-?\d[\d,]*(\.\d+)?/g);
-            if (numbers) return numbers[numbers.length - 1].replace(/,/g, '');
-            return 'SKIP';
-        }
-        if (/^[\[{].*[\]}]$/.test(cleaned) || cleaned.includes('{')) {
-            return cleaned.replace(/\s+/g, ' ').trim();
-        }
-        if (/^-?\d[\d,]*(\.\d+)?$/.test(cleaned)) return cleaned;
-        const lines = cleaned.split('\n').map(l => l.trim()).filter(l => l);
-        for (let i = lines.length - 1; i >= 0; i--) {
-            const line = lines[i];
-            if (/^(=|\b(answer|result|solution)\b)\s*[-+]?\d[\d,]*(\.\d+)?$/i.test(line)) {
-                const m = line.match(/-?\d[\d,]*(\.\d+)?/);
-                if (m) return m[0].replace(/,/g, '');
+        // ========== ACTIVATION BUTTON (FIXED) ==========
+        const activateBtn = document.getElementById('ixl-activate');
+        activateBtn.addEventListener('click', async function() {
+            console.log('Activate button clicked');
+            const keyInput = document.getElementById('ixl-license-input');
+            if (!keyInput) {
+                alert('License input not found.');
+                return;
             }
-            if (/^-?\d[\d,]*(\.\d+)?$/.test(line)) return line;
-        }
-        const nums = cleaned.match(/-?\d[\d,]*(\.\d+)?/g);
-        if (nums) return nums[nums.length - 1].replace(/,/g, '');
-        return cleaned;
-    }
-
-    // ========== INPUT ANSWER ==========
-    function inputAnswer(answer) {
-        if (!answer) return false;
-        answer = String(answer).trim();
-        const normalizedAnswer = answer.replace(/\s+/g, '').toLowerCase();
-        const mcSelectors = ['.multiple-choice-option','.answer-choice','.choice','.option','label','li[role="radio"]','button[role="radio"]'];
-        for (const sel of mcSelectors) {
-            const options = document.querySelectorAll(sel);
-            for (const opt of options) {
-                if (opt.offsetParent === null) continue;
-                const optText = (opt.innerText || opt.textContent || '').trim();
-                const normalizedOpt = optText.replace(/\s+/g, '').toLowerCase();
-                if (normalizedOpt === normalizedAnswer) {
-                    log(`Clicking option: ${optText}`);
-                    opt.click();
-                    setTimeout(() => clickSubmitButton(null), 200);
-                    return true;
-                }
+            const key = keyInput.value.trim();
+            if (await validateLicenseKey(key, true)) {
+                loader.style.opacity = '0';
+                setTimeout(() => {
+                    loader.style.display = 'none';
+                    panel.classList.add('show');
+                    log('Panel activated. Welcome!');
+                    checkForUpdates();
+                }, 500);
             }
-        }
-        const allInputs = [...document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])')]
-            .filter(inp => inp.offsetParent !== null && !inp.closest('#ixl-cheat-panel'));
-        const digitBoxes = allInputs.filter(inp => {
-            const maxLen = inp.getAttribute('maxlength');
-            return maxLen === '1' || inp.closest('.question-component, .crisp-question, .skill-practice-question');
         });
-        log(`Found ${digitBoxes.length} digit box(es)`);
-        if (digitBoxes.length === 0) return false;
 
-        const isNegative = answer.startsWith('-');
-        const absAnswer = isNegative ? answer.slice(1) : answer;
+        // ========== UPDATE CHECK ==========
+        function showUpdateOverlay() {
+            if (document.getElementById('update-overlay')) return;
+            const overlay = document.createElement('div');
+            overlay.id = 'update-overlay';
+            overlay.innerHTML = `
+                <div class="box">
+                    <h2>Update Required</h2>
+                    <p>A new version of the IXL Auto Answerer is available. You must update to continue using the tool.</p>
+                    <button id="update-now-btn">Update Now</button>
+                    <button id="reload-after-update-btn">I've Updated – Reload</button>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+            document.getElementById('update-now-btn').addEventListener('click', function() {
+                window.open(`${SERVER_URL}/script.user.js`, '_blank');
+                setTimeout(() => location.reload(), 10000);
+            });
+            document.getElementById('reload-after-update-btn').addEventListener('click', function() {
+                location.reload();
+            });
+        }
 
-        if (digitBoxes.length === 1) {
-            let valueToSet = answer.replace(/,/g, '');
-            digitBoxes[0].value = valueToSet;
-            digitBoxes[0].dispatchEvent(new Event('input', { bubbles: true }));
-            digitBoxes[0].dispatchEvent(new Event('change', { bubbles: true }));
+        async function checkForUpdates() {
+            try {
+                const response = await new Promise((resolve, reject) => {
+                    GM_xmlhttpRequest({
+                        method: 'GET',
+                        url: `${SERVER_URL}/script.user.js?nocache=${Date.now()}`,
+                        onload: resolve,
+                        onerror: reject,
+                        timeout: 5000
+                    });
+                });
+                const scriptText = response.responseText;
+                const versionMatch = scriptText.match(/@version\s+([\d.]+)/);
+                if (versionMatch) {
+                    const latestVersion = versionMatch[1];
+                    if (latestVersion !== CURRENT_VERSION) {
+                        updateRequired = true;
+                        document.getElementById('ixl-toggle').disabled = true;
+                        showUpdateOverlay();
+                    }
+                }
+            } catch (e) { console.log('Update check failed:', e); }
+        }
+        setInterval(checkForUpdates, 5 * 60 * 1000);
+
+        // ========== ARITHMETIC SOLVER ==========
+        function solveBasicMath(questionText) {
+            let q = questionText.replace(/\b(Add|Subtract|Multiply|Divide)\.?\s*/gi, '');
+            q = q.replace(/,/g, '');
+            const match = q.match(/(-?\d+(?:\.\d+)?)\s*([+\-*/])\s*(-?\d+(?:\.\d+)?)/);
+            if (!match) return null;
+            const num1 = parseFloat(match[1]);
+            const op = match[2];
+            const num2 = parseFloat(match[3]);
+            let result;
+            switch (op) {
+                case '+': result = num1 + num2; break;
+                case '-': result = num1 - num2; break;
+                case '*': result = num1 * num2; break;
+                case '/': result = num1 / num2; break;
+                default: return null;
+            }
+            return result % 1 === 0 ? result.toString() : result.toFixed(2).replace(/\.?0+$/, '');
+        }
+
+        // ========== QUESTION EXTRACTION ==========
+        function getQuestionTextFromEl(el) {
+            let text = el.innerText || el.textContent || '';
+            text = text.replace(/\s+/g, ' ').trim();
+            text = text.replace(/(\d)\s+(?=\d)/g, '$1');
+            text = text.replace(/\s*,\s*(?=\d{3}(\D|$))/g, ',');
+            return text;
+        }
+
+        function extractQuestionFromDOM() {
+            const specificSelectors = [
+                '.question-component .question-text',
+                '.question-component',
+                '.crisp-question',
+                '.skill-practice-question',
+                '.question-text',
+                '.question'
+            ];
+            for (const sel of specificSelectors) {
+                const el = document.querySelector(sel);
+                if (el && el.textContent.trim()) {
+                    const text = getQuestionTextFromEl(el);
+                    if (text.length > 10 && text.length < 2000 && !/Play|Seek|video|Created with Snap|Learn with an example|Incomplete answer|You did not finish|SmartScore|Questions answered|Work it out|Not feeling ready|Company|Blog|Help center|User guides|Tell us what you think|Testimonia/i.test(text)) return text;
+                }
+            }
+            const candidates = document.querySelectorAll('div, section, article, p, span, li');
+            let best = null, bestScore = 0;
+            for (const el of candidates) {
+                if (el.closest('#ixl-cheat-panel')) continue;
+                const text = getQuestionTextFromEl(el);
+                if (text.length < 20 || text.length > 5000) continue;
+                if (/Play|Seek|video|Created with Snap|Learn with an example|Incomplete answer|You did not finish|SmartScore|Questions answered|Work it out|Not feeling ready|Company|Blog|Help center|User guides|Tell us what you think|Testimonia/i.test(text)) continue;
+                let score = 0;
+                if (/[?=+\-*/^%]/.test(text)) score += 50;
+                if (/\d/.test(text)) score += 30;
+                if (/what|which|solve|find|calculate|simplify|evaluate|add|subtract|multiply|divide|domain|range/i.test(text)) score += 20;
+                if (text.length < 500) score += 20;
+                if (/question|skill|crisp|problem/i.test(el.className)) score += 100;
+                if (score > bestScore) { bestScore = score; best = el; }
+            }
+            return best ? getQuestionTextFromEl(best) : '';
+        }
+
+        function getQuestion() {
+            if (manualQuestionEl) {
+                const text = getQuestionTextFromEl(manualQuestionEl);
+                if (text) { log('Using manually picked element: ' + text.substring(0, 100)); return text; }
+            }
+            const text = extractQuestionFromDOM();
+            if (text) { log('Auto-detected: ' + text.substring(0, 100)); return text; }
+            log('No question found.');
+            return '';
+        }
+
+        // ========== CLEAN AI ANSWER ==========
+        function cleanAIAnswer(raw) {
+            let cleaned = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+            if (!cleaned) {
+                const numbers = raw.match(/-?\d[\d,]*(\.\d+)?/g);
+                if (numbers) return numbers[numbers.length - 1].replace(/,/g, '');
+                return 'SKIP';
+            }
+            if (/^[\[{].*[\]}]$/.test(cleaned) || cleaned.includes('{')) {
+                return cleaned.replace(/\s+/g, ' ').trim();
+            }
+            if (/^-?\d[\d,]*(\.\d+)?$/.test(cleaned)) return cleaned;
+            const lines = cleaned.split('\n').map(l => l.trim()).filter(l => l);
+            for (let i = lines.length - 1; i >= 0; i--) {
+                const line = lines[i];
+                if (/^(=|\b(answer|result|solution)\b)\s*[-+]?\d[\d,]*(\.\d+)?$/i.test(line)) {
+                    const m = line.match(/-?\d[\d,]*(\.\d+)?/);
+                    if (m) return m[0].replace(/,/g, '');
+                }
+                if (/^-?\d[\d,]*(\.\d+)?$/.test(line)) return line;
+            }
+            const nums = cleaned.match(/-?\d[\d,]*(\.\d+)?/g);
+            if (nums) return nums[nums.length - 1].replace(/,/g, '');
+            return cleaned;
+        }
+
+        // ========== INPUT ANSWER ==========
+        function inputAnswer(answer) {
+            if (!answer) return false;
+            answer = String(answer).trim();
+            const normalizedAnswer = answer.replace(/\s+/g, '').toLowerCase();
+            const mcSelectors = ['.multiple-choice-option','.answer-choice','.choice','.option','label','li[role="radio"]','button[role="radio"]'];
+            for (const sel of mcSelectors) {
+                const options = document.querySelectorAll(sel);
+                for (const opt of options) {
+                    if (opt.offsetParent === null) continue;
+                    const optText = (opt.innerText || opt.textContent || '').trim();
+                    const normalizedOpt = optText.replace(/\s+/g, '').toLowerCase();
+                    if (normalizedOpt === normalizedAnswer) {
+                        log(`Clicking option: ${optText}`);
+                        opt.click();
+                        setTimeout(() => clickSubmitButton(null), 200);
+                        return true;
+                    }
+                }
+            }
+            const allInputs = [...document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])')]
+                .filter(inp => inp.offsetParent !== null && !inp.closest('#ixl-cheat-panel'));
+            const digitBoxes = allInputs.filter(inp => {
+                const maxLen = inp.getAttribute('maxlength');
+                return maxLen === '1' || inp.closest('.question-component, .crisp-question, .skill-practice-question');
+            });
+            log(`Found ${digitBoxes.length} digit box(es)`);
+            if (digitBoxes.length === 0) return false;
+
+            const isNegative = answer.startsWith('-');
+            const absAnswer = isNegative ? answer.slice(1) : answer;
+
+            if (digitBoxes.length === 1) {
+                let valueToSet = answer.replace(/,/g, '');
+                digitBoxes[0].value = valueToSet;
+                digitBoxes[0].dispatchEvent(new Event('input', { bubbles: true }));
+                digitBoxes[0].dispatchEvent(new Event('change', { bubbles: true }));
+                setTimeout(() => clickSubmitButton(digitBoxes), 700);
+                return true;
+            }
+
+            const digits = absAnswer.replace(/,/g, '').replace(/[^0-9]/g, '');
+            if (!digits) return false;
+            const boxCount = digitBoxes.length;
+            let digitStr = digits;
+            if (digits.length > boxCount) digitStr = digits.slice(-boxCount);
+            else if (digits.length < boxCount) digitStr = ' '.repeat(boxCount - digits.length) + digits;
+            log(`Filling ${boxCount} boxes with: ${digitStr.trim()}`);
+            for (let i = 0; i < boxCount; i++) {
+                digitBoxes[i].value = digitStr[i] === ' ' ? '' : digitStr[i];
+                digitBoxes[i].dispatchEvent(new Event('input', { bubbles: true }));
+                digitBoxes[i].dispatchEvent(new Event('change', { bubbles: true }));
+            }
             setTimeout(() => clickSubmitButton(digitBoxes), 700);
             return true;
         }
 
-        const digits = absAnswer.replace(/,/g, '').replace(/[^0-9]/g, '');
-        if (!digits) return false;
-        const boxCount = digitBoxes.length;
-        let digitStr = digits;
-        if (digits.length > boxCount) digitStr = digits.slice(-boxCount);
-        else if (digits.length < boxCount) digitStr = ' '.repeat(boxCount - digits.length) + digits;
-        log(`Filling ${boxCount} boxes with: ${digitStr.trim()}`);
-        for (let i = 0; i < boxCount; i++) {
-            digitBoxes[i].value = digitStr[i] === ' ' ? '' : digitStr[i];
-            digitBoxes[i].dispatchEvent(new Event('input', { bubbles: true }));
-            digitBoxes[i].dispatchEvent(new Event('change', { bubbles: true }));
+        function clickSubmitButton(boxes) {
+            const submitSelectors = ['.submit-button','.check-answer-button','button[type="submit"]','input[type="submit"]','button[aria-label="Submit"]','button[aria-label="Check answer"]','.crisp-button','.button-primary','button'];
+            for (const sel of submitSelectors) {
+                const candidates = document.querySelectorAll(sel);
+                for (const btn of candidates) {
+                    if (btn.offsetParent) {
+                        const text = (btn.textContent || btn.value || '').trim().toLowerCase();
+                        if (sel === 'button' && !(text.includes('submit') || text.includes('check') || text.includes('ok') || btn.type === 'submit')) continue;
+                        log('Clicking submit: <' + btn.tagName + '> text="' + text + '"');
+                        btn.click();
+                        return true;
+                    }
+                }
+            }
+            if (boxes && boxes.length > 0) {
+                log('No submit button found, pressing Enter on last box.');
+                const lastBox = boxes[boxes.length - 1];
+                const event = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true });
+                lastBox.dispatchEvent(event);
+                return true;
+            }
+            log('Submit failed.');
+            return false;
         }
-        setTimeout(() => clickSubmitButton(digitBoxes), 700);
-        return true;
-    }
 
-    function clickSubmitButton(boxes) {
-        const submitSelectors = ['.submit-button','.check-answer-button','button[type="submit"]','input[type="submit"]','button[aria-label="Submit"]','button[aria-label="Check answer"]','.crisp-button','.button-primary','button'];
-        for (const sel of submitSelectors) {
-            const candidates = document.querySelectorAll(sel);
-            for (const btn of candidates) {
+        function clickNext() {
+            const buttons = document.querySelectorAll('button');
+            for (const btn of buttons) {
                 if (btn.offsetParent) {
                     const text = (btn.textContent || btn.value || '').trim().toLowerCase();
-                    if (sel === 'button' && !(text.includes('submit') || text.includes('check') || text.includes('ok') || btn.type === 'submit')) continue;
-                    log('Clicking submit: <' + btn.tagName + '> text="' + text + '"');
-                    btn.click();
-                    return true;
-                }
-            }
-        }
-        if (boxes && boxes.length > 0) {
-            log('No submit button found, pressing Enter on last box.');
-            const lastBox = boxes[boxes.length - 1];
-            const event = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true });
-            lastBox.dispatchEvent(event);
-            return true;
-        }
-        log('Submit failed.');
-        return false;
-    }
-
-    function clickNext() {
-        const buttons = document.querySelectorAll('button');
-        for (const btn of buttons) {
-            if (btn.offsetParent) {
-                const text = (btn.textContent || btn.value || '').trim().toLowerCase();
-                if (/next|continue|ok|close/.test(text)) {
-                    log('Clicking next: ' + text);
-                    btn.click();
-                    return true;
-                }
-            }
-        }
-        log('No next button found.');
-        return false;
-    }
-
-    function isComplete() {
-        return document.querySelector('.skill-complete, .congratulations, .mastery-achieved, .practice-complete');
-    }
-
-    function getAIAnswer(question) {
-        return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: 'POST',
-                url: GROQ_URL,
-                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + GROQ_API_KEY },
-                data: JSON.stringify({
-                    model: DEFAULT_MODEL,
-                    messages: [
-                        { role: 'system', content: 'You are a math problem solver. Answer the following question with ONLY the final answer, no reasoning or chain-of-thought. Do not use any think tags. For math, output just the numerical answer (commas allowed). If multiple choice, output the exact choice text. If the question involves fractions, output the answer as a simplified fraction or whole number. Do not write any steps or explanations.' },
-                        { role: 'user', content: question }
-                    ],
-                    temperature: 0.1,
-                    max_tokens: 150,
-                    stop: ["<think>"]
-                }),
-                onload: function(response) {
-                    try {
-                        const data = JSON.parse(response.responseText);
-                        if (data.error) { log('API Error: ' + data.error.message); reject(new Error(data.error.message)); return; }
-                        const raw = data.choices[0].message.content.trim();
-                        const clean = cleanAIAnswer(raw);
-                        log('Raw AI: ' + raw.substring(0, 100));
-                        log('Cleaned: ' + clean);
-                        resolve(clean || 'SKIP');
-                    } catch (e) {
-                        log('Parse error: ' + e.message);
-                        reject(new Error('Failed to parse AI response'));
+                    if (/next|continue|ok|close/.test(text)) {
+                        log('Clicking next: ' + text);
+                        btn.click();
+                        return true;
                     }
-                },
-                onerror: function() { log('Network error'); reject(new Error('Network error')); }
-            });
-        });
-    }
-
-    let questionCount = 0, errorCount = 0;
-    const MAX_ERRORS = 5;
-
-    async function runLoop() {
-        while (autoAnswer && questionCount < 100 && errorCount < MAX_ERRORS) {
-            if (questionCount % 30 === 0) {
-                const valid = await validateLicenseKey(licenseKey, false);
-                if (!valid) { log('License no longer valid. Stopping.'); autoAnswer = false; updateUI(); break; }
-            }
-            if (isComplete()) { log('Skill complete!'); break; }
-            const currentUrl = window.location.href;
-            const q = getQuestion();
-            if (!q) { log('No question found. Waiting...'); await sleep(2000); continue; }
-
-            const normalizedQ = q.replace(/[,\s]+/g, '').toLowerCase();
-            if (normalizedQ === lastQuestionTextNormalized) {
-                log('Same question detected, trying next button.');
-                if (clickNext()) { await sleep(2000); continue; }
-                else { log('Next button not found, waiting 3s...'); await sleep(3000); continue; }
-            }
-            lastQuestionTextNormalized = normalizedQ;
-
-            try {
-                const basicAnswer = solveBasicMath(q);
-                let answer = basicAnswer;
-                if (!answer) {
-                    answer = await getAIAnswer(q);
-                } else {
-                    log('Basic solver result: ' + answer);
                 }
-                if (answer && answer !== 'SKIP') {
-                    const answered = inputAnswer(answer);
-                    if (answered) {
-                        questionCount++; log('Answered ' + questionCount); errorCount = 0;
-                        await sleep(2500);
-                        if (!clickNext()) {
-                            log('Next button not clicked, retrying after 2s.');
-                            await sleep(2000);
-                            clickNext();
-                        }
-                    } else { log('Could not input answer. Skipping next.'); await sleep(2000); clickNext(); }
-                } else { log('AI returned empty/SKIP. Skipping next.'); await sleep(2000); clickNext(); }
-            } catch (err) {
-                errorCount++;
-                log('Error: ' + err.message);
-                if (err.message.includes('Rate limit')) { log('Rate limit hit, waiting 10s...'); await sleep(10000); }
-                else await sleep(2000);
-                if (errorCount >= MAX_ERRORS) { log('Too many errors, stopping.'); break; }
             }
-            if (window.location.href !== currentUrl) {
-                log('WARNING: Page navigated to ' + window.location.href);
-                autoAnswer = false; updateUI(); break;
-            }
-            manualQuestionEl = null;
+            log('No next button found.');
+            return false;
         }
-        autoAnswer = false; updateUI(); log('Stopped.');
-    }
 
-    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-    function updateUI() {
-        const toggleBtn = document.getElementById('ixl-toggle');
-        const statusDiv = document.getElementById('ixl-status');
-        toggleBtn.textContent = autoAnswer ? 'Stop' : 'Start';
-        toggleBtn.className = 'ixl-btn' + (autoAnswer ? ' stop' : '');
-        statusDiv.textContent = 'Status: ' + (autoAnswer ? 'ON' : 'OFF');
-        statusDiv.className = autoAnswer ? 'on' : '';
-    }
+        function isComplete() {
+            return document.querySelector('.skill-complete, .congratulations, .mastery-achieved, .practice-complete');
+        }
 
-    document.getElementById('ixl-toggle').addEventListener('click', async function() {
-        if (!licenseKey) { alert('License key not set.'); return; }
-        if (updateRequired) { alert('Please update the script first.'); return; }
-        if (!await validateLicenseKey(licenseKey, true)) return;
-        autoAnswer = !autoAnswer;
+        function getAIAnswer(question) {
+            return new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: 'POST',
+                    url: GROQ_URL,
+                    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + GROQ_API_KEY },
+                    data: JSON.stringify({
+                        model: DEFAULT_MODEL,
+                        messages: [
+                            { role: 'system', content: 'You are a math problem solver. Answer the following question with ONLY the final answer, no reasoning or chain-of-thought. Do not use any think tags. For math, output just the numerical answer (commas allowed). If multiple choice, output the exact choice text. If the question involves fractions, output the answer as a simplified fraction or whole number. Do not write any steps or explanations.' },
+                            { role: 'user', content: question }
+                        ],
+                        temperature: 0.1,
+                        max_tokens: 150,
+                        stop: ["<think>"]
+                    }),
+                    onload: function(response) {
+                        try {
+                            const data = JSON.parse(response.responseText);
+                            if (data.error) { log('API Error: ' + data.error.message); reject(new Error(data.error.message)); return; }
+                            const raw = data.choices[0].message.content.trim();
+                            const clean = cleanAIAnswer(raw);
+                            log('Raw AI: ' + raw.substring(0, 100));
+                            log('Cleaned: ' + clean);
+                            resolve(clean || 'SKIP');
+                        } catch (e) {
+                            log('Parse error: ' + e.message);
+                            reject(new Error('Failed to parse AI response'));
+                        }
+                    },
+                    onerror: function() { log('Network error'); reject(new Error('Network error')); }
+                });
+            });
+        }
+
+        let questionCount = 0, errorCount = 0;
+        const MAX_ERRORS = 5;
+
+        async function runLoop() {
+            while (autoAnswer && questionCount < 100 && errorCount < MAX_ERRORS) {
+                if (questionCount % 30 === 0) {
+                    const valid = await validateLicenseKey(licenseKey, false);
+                    if (!valid) { log('License no longer valid. Stopping.'); autoAnswer = false; updateUI(); break; }
+                }
+                if (isComplete()) { log('Skill complete!'); break; }
+                const currentUrl = window.location.href;
+                const q = getQuestion();
+                if (!q) { log('No question found. Waiting...'); await sleep(2000); continue; }
+
+                const normalizedQ = q.replace(/[,\s]+/g, '').toLowerCase();
+                if (normalizedQ === lastQuestionTextNormalized) {
+                    log('Same question detected, trying next button.');
+                    if (clickNext()) { await sleep(2000); continue; }
+                    else { log('Next button not found, waiting 3s...'); await sleep(3000); continue; }
+                }
+                lastQuestionTextNormalized = normalizedQ;
+
+                try {
+                    const basicAnswer = solveBasicMath(q);
+                    let answer = basicAnswer;
+                    if (!answer) {
+                        answer = await getAIAnswer(q);
+                    } else {
+                        log('Basic solver result: ' + answer);
+                    }
+                    if (answer && answer !== 'SKIP') {
+                        const answered = inputAnswer(answer);
+                        if (answered) {
+                            questionCount++; log('Answered ' + questionCount); errorCount = 0;
+                            await sleep(2500);
+                            if (!clickNext()) {
+                                log('Next button not clicked, retrying after 2s.');
+                                await sleep(2000);
+                                clickNext();
+                            }
+                        } else { log('Could not input answer. Skipping next.'); await sleep(2000); clickNext(); }
+                    } else { log('AI returned empty/SKIP. Skipping next.'); await sleep(2000); clickNext(); }
+                } catch (err) {
+                    errorCount++;
+                    log('Error: ' + err.message);
+                    if (err.message.includes('Rate limit')) { log('Rate limit hit, waiting 10s...'); await sleep(10000); }
+                    else await sleep(2000);
+                    if (errorCount >= MAX_ERRORS) { log('Too many errors, stopping.'); break; }
+                }
+                if (window.location.href !== currentUrl) {
+                    log('WARNING: Page navigated to ' + window.location.href);
+                    autoAnswer = false; updateUI(); break;
+                }
+                manualQuestionEl = null;
+            }
+            autoAnswer = false; updateUI(); log('Stopped.');
+        }
+
+        function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+        function updateUI() {
+            const toggleBtn = document.getElementById('ixl-toggle');
+            const statusDiv = document.getElementById('ixl-status');
+            toggleBtn.textContent = autoAnswer ? 'Stop' : 'Start';
+            toggleBtn.className = 'ixl-btn' + (autoAnswer ? ' stop' : '');
+            statusDiv.textContent = 'Status: ' + (autoAnswer ? 'ON' : 'OFF');
+            statusDiv.className = autoAnswer ? 'on' : '';
+        }
+
+        document.getElementById('ixl-toggle').addEventListener('click', async function() {
+            if (!licenseKey) { alert('License key not set.'); return; }
+            if (updateRequired) { alert('Please update the script first.'); return; }
+            if (!await validateLicenseKey(licenseKey, true)) return;
+            autoAnswer = !autoAnswer;
+            updateUI();
+            if (autoAnswer) {
+                errorCount = 0;
+                lastQuestionTextNormalized = '';
+                log('Started with model: ' + DEFAULT_MODEL);
+                runLoop();
+            } else log('Stopped.');
+        });
+
         updateUI();
-        if (autoAnswer) {
-            errorCount = 0;
-            lastQuestionTextNormalized = '';
-            log('Started with model: ' + DEFAULT_MODEL);
-            runLoop();
-        } else log('Stopped.');
-    });
+        log('Panel ready. Enter license key, then Start.');
+    }
 
-    updateUI();
-    log('Panel ready. Enter license key, then Start.');
+    // Run after DOM ready
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
 })();
