@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IXL Auto Answerer (Loader + Server Key + Auto Update)
 // @namespace    http://tampermonkey.net/
-// @version      16.2
-// @description  Auto answer IXL with server-validated license key, simplified loader GUI, groq/compound model, auto update checker
+// @version      16.3
+// @description  Auto answer IXL with server-validated license key, simplified loader GUI, groq/compound model, auto update checker, multiple choice support
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -22,7 +22,7 @@
     const DEFAULT_MODEL = "groq/compound";
     const SERVER_URL = "https://ixl-key-server.onrender.com";
     const SECRET = "IXL_CHEAT_SECRET_2024";
-    const CURRENT_VERSION = "16.2"; // Update this when you change the script
+    const CURRENT_VERSION = "16.3";
 
     // ========== STATE ==========
     let autoAnswer = false;
@@ -208,7 +208,7 @@
                 loader.style.display = 'none';
                 panel.classList.add('show');
                 log('Panel activated. Welcome!');
-                checkForUpdates(); // initial check
+                checkForUpdates();
             }, 500);
         }
     });
@@ -225,7 +225,6 @@
                 });
             });
             const scriptText = response.responseText;
-            // Extract @version from metadata
             const versionMatch = scriptText.match(/@version\s+([\d.]+)/);
             if (versionMatch) {
                 const latestVersion = versionMatch[1];
@@ -240,11 +239,9 @@
             console.log('Update check failed:', e);
         }
     }
-
-    // Check for updates every 15 minutes
     setInterval(checkForUpdates, 15 * 60 * 1000);
 
-    // ========== QUESTION EXTRACTION (unchanged) ==========
+    // ========== QUESTION EXTRACTION ==========
     function getQuestionTextFromEl(el) {
         let text = el.innerText || el.textContent || '';
         text = text.replace(/\s+/g, ' ').trim();
@@ -279,7 +276,7 @@
             let score = 0;
             if (/[?=+\-*/^%]/.test(text)) score += 50;
             if (/\d/.test(text)) score += 30;
-            if (/what|which|solve|find|calculate|simplify|evaluate|add|subtract|multiply|divide/i.test(text)) score += 20;
+            if (/what|which|solve|find|calculate|simplify|evaluate|add|subtract|multiply|divide|domain|range/i.test(text)) score += 20;
             if (text.length < 500) score += 20;
             if (/question|skill|crisp|problem/i.test(el.className)) score += 100;
             if (score > bestScore) { bestScore = score; best = el; }
@@ -298,12 +295,17 @@
         return '';
     }
 
+    // ========== CLEAN AI ANSWER ==========
     function cleanAIAnswer(raw) {
         let cleaned = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
         if (!cleaned) {
             const numbers = raw.match(/-?\d[\d,]*(\.\d+)?/g);
             if (numbers) return numbers[numbers.length - 1].replace(/,/g, '');
             return 'SKIP';
+        }
+        // If it looks like a set or list, keep it as is (for multiple choice)
+        if (/^[\[{].*[\]}]$/.test(cleaned) || cleaned.includes('{')) {
+            return cleaned.replace(/\s+/g, ' ').trim();
         }
         if (/^-?\d[\d,]*(\.\d+)?$/.test(cleaned)) return cleaned;
         const lines = cleaned.split('\n').map(l => l.trim()).filter(l => l);
@@ -317,14 +319,42 @@
         }
         const nums = cleaned.match(/-?\d[\d,]*(\.\d+)?/g);
         if (nums) return nums[nums.length - 1].replace(/,/g, '');
-        return 'SKIP';
+        return cleaned; // return as is if nothing else
     }
 
+    // ========== INPUT ANSWER (Multiple choice + digit boxes) ==========
     function inputAnswer(answer) {
         if (!answer) return false;
         answer = String(answer).trim();
-        const isNegative = answer.startsWith('-');
-        const absAnswer = isNegative ? answer.slice(1) : answer;
+        const normalizedAnswer = answer.replace(/\s+/g, '').toLowerCase();
+
+        // --- Multiple choice detection ---
+        const mcSelectors = [
+            '.multiple-choice-option',
+            '.answer-choice',
+            '.choice',
+            '.option',
+            'label',
+            'li[role="radio"]',
+            'button[role="radio"]'
+        ];
+        for (const sel of mcSelectors) {
+            const options = document.querySelectorAll(sel);
+            for (const opt of options) {
+                if (opt.offsetParent === null) continue;
+                const optText = (opt.innerText || opt.textContent || '').trim();
+                const normalizedOpt = optText.replace(/\s+/g, '').toLowerCase();
+                if (normalizedOpt === normalizedAnswer) {
+                    log(`Clicking option: ${optText}`);
+                    opt.click();
+                    // Click submit after a short delay
+                    setTimeout(() => clickSubmitButton(null), 200);
+                    return true;
+                }
+            }
+        }
+
+        // --- Digit boxes fallback ---
         const allInputs = [...document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])')]
             .filter(inp => inp.offsetParent !== null && !inp.closest('#ixl-cheat-panel'));
         const digitBoxes = allInputs.filter(inp => {
@@ -333,6 +363,9 @@
         });
         log(`Found ${digitBoxes.length} digit box(es)`);
         if (digitBoxes.length === 0) return false;
+
+        const isNegative = answer.startsWith('-');
+        const absAnswer = isNegative ? answer.slice(1) : answer;
 
         if (digitBoxes.length === 1) {
             let valueToSet = answer.replace(/,/g, '');
@@ -386,28 +419,15 @@
     }
 
     function clickNext() {
-        const nextSelectors = [
-            '.next-button', '.continue-button', '.btn-next', '.btn-continue',
-            'button[aria-label="Next"]', 'button[aria-label="Continue"]',
-            'button:contains("Next")', 'button:contains("Continue")'
-        ];
-        for (const sel of nextSelectors) {
-            const btn = document.querySelector(sel);
-            if (btn && btn.offsetParent) {
-                const text = btn.textContent.trim().toLowerCase();
-                if (text.includes('next') || text.includes('continue') || text.includes('ok') || text.includes('close')) {
+        const buttons = document.querySelectorAll('button');
+        for (const btn of buttons) {
+            if (btn.offsetParent) {
+                const text = (btn.textContent || btn.value || '').trim().toLowerCase();
+                if (/next|continue|ok|close/.test(text)) {
                     log('Clicking next: ' + text);
                     btn.click();
                     return true;
                 }
-            }
-        }
-        const buttons = document.querySelectorAll('button');
-        for (const btn of buttons) {
-            if (btn.offsetParent && /next|continue|ok|close/i.test(btn.textContent)) {
-                log('Fallback next: ' + btn.textContent);
-                btn.click();
-                return true;
             }
         }
         log('No next button found.');
@@ -427,7 +447,7 @@
                 data: JSON.stringify({
                     model: DEFAULT_MODEL,
                     messages: [
-                        { role: 'system', content: 'You are a math problem solver. Answer the following question with ONLY the final answer, no reasoning or chain-of-thought. Do not use any think tags. For math, output just the numerical answer (commas allowed). If multiple choice, output the exact choice text. If the question involves fractions, output the answer as a simplified fraction or whole number. Do not write any steps or explanations.' },
+                        { role: 'system', content: 'You are a math problem solver. Answer the following question with ONLY the final answer, no reasoning or chain-of-thought. Do not use any think tags. For math, output just the numerical answer (commas allowed). If multiple choice, output the exact text of the correct choice. If the question involves fractions, output the answer as a simplified fraction or whole number. Do not write any steps or explanations.' },
                         { role: 'user', content: question }
                     ],
                     temperature: 0.1,
