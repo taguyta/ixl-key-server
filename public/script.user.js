@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         IXL Auto Answerer (Loader + Server Key + Auto Update + Arithmetic Solver)
+// @name         IXL Auto Answerer
 // @namespace    http://tampermonkey.net/
-// @version      16.8
-// @description  Auto answer IXL with server-validated license key, simplified loader GUI, groq/compound model, mandatory updates, basic math solver
+// @version      16.9
+// @description  Auto answer IXL with server-validated license key, loader GUI, groq/compound model, mandatory updates, basic math solver
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -17,14 +17,12 @@
 (function() {
     'use strict';
 
-    // ========== CONFIG ==========
     const GROQ_API_KEY = "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";
     const DEFAULT_MODEL = "groq/compound";
     const SERVER_URL = "https://ixl-key-server.onrender.com";
     const SECRET = "IXL_CHEAT_SECRET_2024";
-    const CURRENT_VERSION = "16.8";
+    const CURRENT_VERSION = "16.9";
 
-    // ========== STATE ==========
     let autoAnswer = false;
     let licenseKey = GM_getValue('license_key', '');
     let manualQuestionEl = null;
@@ -117,7 +115,7 @@
     `);
 
     function init() {
-        // ========== LOADER ==========
+        // Loader
         const loader = document.createElement('div');
         loader.id = 'ixl-loader';
         loader.innerHTML = `
@@ -126,7 +124,7 @@
         `;
         document.body.appendChild(loader);
 
-        // ========== MAIN PANEL ==========
+        // Main panel
         const panel = document.createElement('div');
         panel.id = 'ixl-cheat-panel';
         panel.innerHTML = `
@@ -140,12 +138,11 @@
         `;
         document.body.appendChild(panel);
 
-        // Load saved license key
         if (licenseKey) {
             document.getElementById('ixl-license-input').value = licenseKey;
         }
 
-        // ========== DRAGGING ==========
+        // Dragging
         const dragHandle = panel.querySelector('.drag-handle');
         let isDragging = false, startX, startY, initialX, initialY;
         dragHandle.addEventListener('mousedown', e => {
@@ -193,22 +190,15 @@
                 return true;
             } catch (e) {
                 console.error(e);
-                if (showAlert) alert('Cannot reach server. Please check your internet connection.');
+                if (showAlert) alert('Cannot reach server.');
                 else log('Cannot reach server.');
                 return false;
             }
         }
 
-        // ========== ACTIVATION BUTTON (FIXED) ==========
-        const activateBtn = document.getElementById('ixl-activate');
-        activateBtn.addEventListener('click', async function() {
-            console.log('Activate button clicked');
-            const keyInput = document.getElementById('ixl-license-input');
-            if (!keyInput) {
-                alert('License input not found.');
-                return;
-            }
-            const key = keyInput.value.trim();
+        // Activation button
+        document.getElementById('ixl-activate').addEventListener('click', async function() {
+            const key = document.getElementById('ixl-license-input').value.trim();
             if (await validateLicenseKey(key, true)) {
                 loader.style.opacity = '0';
                 setTimeout(() => {
@@ -220,7 +210,7 @@
             }
         });
 
-        // ========== UPDATE CHECK ==========
+        // Update check
         function showUpdateOverlay() {
             if (document.getElementById('update-overlay')) return;
             const overlay = document.createElement('div');
@@ -228,7 +218,7 @@
             overlay.innerHTML = `
                 <div class="box">
                     <h2>Update Required</h2>
-                    <p>A new version of the IXL Auto Answerer is available. You must update to continue using the tool.</p>
+                    <p>A new version of the IXL Auto Answerer is available. You must update to continue.</p>
                     <button id="update-now-btn">Update Now</button>
                     <button id="reload-after-update-btn">I've Updated – Reload</button>
                 </div>
@@ -254,21 +244,17 @@
                         timeout: 5000
                     });
                 });
-                const scriptText = response.responseText;
-                const versionMatch = scriptText.match(/@version\s+([\d.]+)/);
-                if (versionMatch) {
-                    const latestVersion = versionMatch[1];
-                    if (latestVersion !== CURRENT_VERSION) {
-                        updateRequired = true;
-                        document.getElementById('ixl-toggle').disabled = true;
-                        showUpdateOverlay();
-                    }
+                const versionMatch = response.responseText.match(/@version\s+([\d.]+)/);
+                if (versionMatch && versionMatch[1] !== CURRENT_VERSION) {
+                    updateRequired = true;
+                    document.getElementById('ixl-toggle').disabled = true;
+                    showUpdateOverlay();
                 }
             } catch (e) { console.log('Update check failed:', e); }
         }
         setInterval(checkForUpdates, 5 * 60 * 1000);
 
-        // ========== ARITHMETIC SOLVER ==========
+        // Arithmetic solver
         function solveBasicMath(questionText) {
             let q = questionText.replace(/\b(Add|Subtract|Multiply|Divide)\.?\s*/gi, '');
             q = q.replace(/,/g, '');
@@ -288,7 +274,7 @@
             return result % 1 === 0 ? result.toString() : result.toFixed(2).replace(/\.?0+$/, '');
         }
 
-        // ========== QUESTION EXTRACTION ==========
+        // Question extraction
         function getQuestionTextFromEl(el) {
             let text = el.innerText || el.textContent || '';
             text = text.replace(/\s+/g, ' ').trim();
@@ -298,15 +284,17 @@
         }
 
         function extractQuestionFromDOM() {
-            const specificSelectors = [
+            const selectors = [
                 '.question-component .question-text',
                 '.question-component',
                 '.crisp-question',
                 '.skill-practice-question',
                 '.question-text',
-                '.question'
+                '.question',
+                '.crisp-question-text',
+                '.question-container .question'
             ];
-            for (const sel of specificSelectors) {
+            for (const sel of selectors) {
                 const el = document.querySelector(sel);
                 if (el && el.textContent.trim()) {
                     const text = getQuestionTextFromEl(el);
@@ -334,15 +322,15 @@
         function getQuestion() {
             if (manualQuestionEl) {
                 const text = getQuestionTextFromEl(manualQuestionEl);
-                if (text) { log('Using manually picked element: ' + text.substring(0, 100)); return text; }
+                if (text) { log('Manual question: ' + text.substring(0, 100)); return text; }
             }
             const text = extractQuestionFromDOM();
-            if (text) { log('Auto-detected: ' + text.substring(0, 100)); return text; }
+            if (text) { log('Detected: ' + text.substring(0, 100)); return text; }
             log('No question found.');
             return '';
         }
 
-        // ========== CLEAN AI ANSWER ==========
+        // Clean AI answer
         function cleanAIAnswer(raw) {
             let cleaned = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
             if (!cleaned) {
@@ -368,26 +356,49 @@
             return cleaned;
         }
 
-        // ========== INPUT ANSWER ==========
+        // Input answer (improved set matching)
         function inputAnswer(answer) {
             if (!answer) return false;
             answer = String(answer).trim();
-            const normalizedAnswer = answer.replace(/\s+/g, '').toLowerCase();
+
+            // ---- Multiple choice ----
             const mcSelectors = ['.multiple-choice-option','.answer-choice','.choice','.option','label','li[role="radio"]','button[role="radio"]'];
+            let bestMatch = null;
+            let bestScore = 0;
+
+            // If answer is a set, compare numbers inside braces
+            let answerNumbers = null;
+            if (answer.startsWith('{')) {
+                answerNumbers = answer.match(/-?\d+/g).map(Number).sort((a,b)=>a-b);
+            }
+
             for (const sel of mcSelectors) {
                 const options = document.querySelectorAll(sel);
                 for (const opt of options) {
                     if (opt.offsetParent === null) continue;
                     const optText = (opt.innerText || opt.textContent || '').trim();
                     const normalizedOpt = optText.replace(/\s+/g, '').toLowerCase();
-                    if (normalizedOpt === normalizedAnswer) {
-                        log(`Clicking option: ${optText}`);
+                    const normalizedAns = answer.replace(/\s+/g, '').toLowerCase();
+                    if (normalizedOpt === normalizedAns) {
+                        log(`Exact match option: ${optText}`);
                         opt.click();
                         setTimeout(() => clickSubmitButton(null), 200);
                         return true;
                     }
+                    // Set matching
+                    if (answerNumbers && optText.includes('{')) {
+                        const optNumbers = optText.match(/-?\d+/g).map(Number).sort((a,b)=>a-b);
+                        if (answerNumbers.length === optNumbers.length && answerNumbers.every((v,i)=>v===optNumbers[i])) {
+                            log(`Set match option: ${optText}`);
+                            opt.click();
+                            setTimeout(() => clickSubmitButton(null), 200);
+                            return true;
+                        }
+                    }
                 }
             }
+
+            // ---- Digit boxes ----
             const allInputs = [...document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])')]
                 .filter(inp => inp.offsetParent !== null && !inp.closest('#ixl-cheat-panel'));
             const digitBoxes = allInputs.filter(inp => {
@@ -415,7 +426,6 @@
             let digitStr = digits;
             if (digits.length > boxCount) digitStr = digits.slice(-boxCount);
             else if (digits.length < boxCount) digitStr = ' '.repeat(boxCount - digits.length) + digits;
-            log(`Filling ${boxCount} boxes with: ${digitStr.trim()}`);
             for (let i = 0; i < boxCount; i++) {
                 digitBoxes[i].value = digitStr[i] === ' ' ? '' : digitStr[i];
                 digitBoxes[i].dispatchEvent(new Event('input', { bubbles: true }));
@@ -433,14 +443,14 @@
                     if (btn.offsetParent) {
                         const text = (btn.textContent || btn.value || '').trim().toLowerCase();
                         if (sel === 'button' && !(text.includes('submit') || text.includes('check') || text.includes('ok') || btn.type === 'submit')) continue;
-                        log('Clicking submit: <' + btn.tagName + '> text="' + text + '"');
+                        log('Clicking submit: ' + text);
                         btn.click();
                         return true;
                     }
                 }
             }
             if (boxes && boxes.length > 0) {
-                log('No submit button found, pressing Enter on last box.');
+                log('No submit button, pressing Enter on last box.');
                 const lastBox = boxes[boxes.length - 1];
                 const event = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true });
                 lastBox.dispatchEvent(event);
@@ -462,7 +472,7 @@
                     }
                 }
             }
-            log('No next button found.');
+            log('No next button.');
             return false;
         }
 
@@ -479,7 +489,7 @@
                     data: JSON.stringify({
                         model: DEFAULT_MODEL,
                         messages: [
-                            { role: 'system', content: 'You are a math problem solver. Answer the following question with ONLY the final answer, no reasoning or chain-of-thought. Do not use any think tags. For math, output just the numerical answer (commas allowed). If multiple choice, output the exact choice text. If the question involves fractions, output the answer as a simplified fraction or whole number. Do not write any steps or explanations.' },
+                            { role: 'system', content: 'You are a math problem solver. Answer the following question with ONLY the final answer, no reasoning. If multiple choice, output the exact text of the correct choice. If the question involves fractions, output the answer as a simplified fraction or whole number. Do not write any steps.' },
                             { role: 'user', content: question }
                         ],
                         temperature: 0.1,
@@ -521,9 +531,9 @@
 
                 const normalizedQ = q.replace(/[,\s]+/g, '').toLowerCase();
                 if (normalizedQ === lastQuestionTextNormalized) {
-                    log('Same question detected, trying next button.');
+                    log('Same question, trying next.');
                     if (clickNext()) { await sleep(2000); continue; }
-                    else { log('Next button not found, waiting 3s...'); await sleep(3000); continue; }
+                    else { await sleep(3000); continue; }
                 }
                 lastQuestionTextNormalized = normalizedQ;
 
@@ -533,7 +543,7 @@
                     if (!answer) {
                         answer = await getAIAnswer(q);
                     } else {
-                        log('Basic solver result: ' + answer);
+                        log('Basic solver: ' + answer);
                     }
                     if (answer && answer !== 'SKIP') {
                         const answered = inputAnswer(answer);
@@ -541,21 +551,20 @@
                             questionCount++; log('Answered ' + questionCount); errorCount = 0;
                             await sleep(2500);
                             if (!clickNext()) {
-                                log('Next button not clicked, retrying after 2s.');
                                 await sleep(2000);
                                 clickNext();
                             }
                         } else { log('Could not input answer. Skipping next.'); await sleep(2000); clickNext(); }
-                    } else { log('AI returned empty/SKIP. Skipping next.'); await sleep(2000); clickNext(); }
+                    } else { log('AI empty/SKIP. Skipping next.'); await sleep(2000); clickNext(); }
                 } catch (err) {
                     errorCount++;
                     log('Error: ' + err.message);
-                    if (err.message.includes('Rate limit')) { log('Rate limit hit, waiting 10s...'); await sleep(10000); }
+                    if (err.message.includes('Rate limit')) { log('Rate limit, wait 10s.'); await sleep(10000); }
                     else await sleep(2000);
                     if (errorCount >= MAX_ERRORS) { log('Too many errors, stopping.'); break; }
                 }
                 if (window.location.href !== currentUrl) {
-                    log('WARNING: Page navigated to ' + window.location.href);
+                    log('Page navigated.');
                     autoAnswer = false; updateUI(); break;
                 }
                 manualQuestionEl = null;
@@ -575,7 +584,7 @@
 
         document.getElementById('ixl-toggle').addEventListener('click', async function() {
             if (!licenseKey) { alert('License key not set.'); return; }
-            if (updateRequired) { alert('Please update the script first.'); return; }
+            if (updateRequired) { alert('Please update first.'); return; }
             if (!await validateLicenseKey(licenseKey, true)) return;
             autoAnswer = !autoAnswer;
             updateUI();
@@ -588,10 +597,9 @@
         });
 
         updateUI();
-        log('Panel ready. Enter license key, then Start.');
+        log('Panel ready.');
     }
 
-    // Run after DOM ready
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);
     } else {
