@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Tempest Hub
 // @namespace    http://tampermonkey.net/
-// @version      18.5
-// @description  Multi-cheat hub for school platforms. License required. Uses intercepted answers for all question types.
+// @version      18.6
+// @description  Multi-cheat hub. License required. Robust network answer capture.
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -23,7 +23,7 @@
     const GROQ_API_KEY = "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";
     const MODEL = "groq/compound";
     const SERVER = "https://ixl-key-server.onrender.com";
-    const VERSION = "18.5";
+    const VERSION = "18.6";
 
     // ==================== STATE ====================
     let licenseKey = GM_getValue('license_key', '');
@@ -40,7 +40,6 @@
     let snowEnabled = GM_getValue('snowEnabled', false);
 
     // Network interception storage
-    let interceptedAnswers = [];
     let currentAnswerFromNetwork = null;
 
     // ==================== STYLES ====================
@@ -80,81 +79,70 @@
     `);
 
     // ==================== NETWORK INTERCEPTION ====================
-    function extractNumberBlocks(data) {
-        function search(obj) {
-            if (!obj || typeof obj !== 'object') return null;
-            if (Array.isArray(obj.numberBlocksByDigits)) {
-                return obj.numberBlocksByDigits;
-            }
-            for (const key in obj) {
-                const res = search(obj[key]);
-                if (res) return res;
-            }
-            return null;
+    function deepSearchForNumberBlocks(obj) {
+        if (!obj || typeof obj !== 'object') return null;
+        if (Array.isArray(obj.numberBlocksByDigits)) return obj.numberBlocksByDigits;
+        for (const key in obj) {
+            const res = deepSearchForNumberBlocks(obj[key]);
+            if (res) return res;
         }
-        return search(data);
+        return null;
     }
 
-    function extractPossibleAnswers(text) {
+    function extractAnswerFromText(text) {
         try {
             const data = JSON.parse(text);
-            // Check for numberBlocksByDigits
-            const digits = extractNumberBlocks(data);
+            const digits = deepSearchForNumberBlocks(data);
             if (digits && digits.length > 0) {
-                const answer = digits.join('');
-                interceptedAnswers.push(answer);
-                currentAnswerFromNetwork = answer;
-                console.log('[Tempest] Found numberBlocksByDigits:', digits, '=> answer:', answer);
+                const ans = digits.join('');
+                currentAnswerFromNetwork = ans;
+                console.log('[Tempest] Captured numberBlocksByDigits:', digits, '=>', ans);
                 return;
             }
-            // Generic search for answer/correct keys
-            function search(obj) {
+            const searchObj = (obj) => {
                 if (!obj || typeof obj !== 'object') return;
                 for (const key in obj) {
-                    const value = obj[key];
-                    if (typeof value === 'string' && /answer|correct|solution/i.test(key)) {
-                        interceptedAnswers.push(value);
-                        currentAnswerFromNetwork = value;
-                        console.log('[Tempest] Found answer:', value);
-                    } else if (typeof value === 'object') {
-                        search(value);
+                    const val = obj[key];
+                    if (typeof val === 'string' && /^(answer|correct|solution)$/i.test(key)) {
+                        currentAnswerFromNetwork = val;
+                        console.log('[Tempest] Captured answer from key', key, ':', val);
+                        return;
+                    } else if (typeof val === 'object') {
+                        searchObj(val);
                     }
                 }
-            }
-            search(data);
+            };
+            searchObj(data);
         } catch(e) {}
     }
 
-    function installNetworkHooks() {
-        const originalFetch = window.fetch;
+    function hookFetch() {
+        const origFetch = window.fetch;
         window.fetch = async function(...args) {
-            const response = await originalFetch.apply(this, args);
-            const cloned = response.clone();
+            const resp = await origFetch.apply(this, args);
+            const clone = resp.clone();
             try {
-                const text = await cloned.text();
-                if (text.includes('numberBlocksByDigits') || text.includes('"answer"') || text.includes('"correct"') || text.includes('"solution"')) {
-                    console.log('[Tempest] Intercepted fetch:', args[0], text.substring(0, 500));
-                    extractPossibleAnswers(text);
-                }
+                const text = await clone.text();
+                extractAnswerFromText(text);
             } catch(e) {}
-            return response;
-        };
-
-        const origXHROpen = XMLHttpRequest.prototype.open;
-        XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-            this.addEventListener('load', function() {
-                try {
-                    if (this.responseText && (this.responseText.includes('numberBlocksByDigits') || this.responseText.includes('"answer"') || this.responseText.includes('"correct"') || this.responseText.includes('"solution"'))) {
-                        console.log('[Tempest] XHR response:', url, this.responseText.substring(0, 500));
-                        extractPossibleAnswers(this.responseText);
-                    }
-                } catch(e) {}
-            });
-            origXHROpen.call(this, method, url, ...rest);
+            return resp;
         };
     }
 
-    installNetworkHooks();
+    function hookXHR() {
+        const origOpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+            this.addEventListener('load', function() {
+                try {
+                    if (this.responseText) extractAnswerFromText(this.responseText);
+                } catch(e) {}
+            });
+            origOpen.call(this, method, url, ...rest);
+        };
+    }
+
+    hookFetch();
+    hookXHR();
 
     // ==================== LOADER ====================
     const loader = document.createElement('div');
@@ -524,88 +512,6 @@
         return /shown|cube|picture|graph|figure|tens|ones|base[- ]ten|count the/i.test(questionText);
     }
 
-    // ==================== CUBE COUNTER (with network answer) ====================
-    function countCubesFromDOM() {
-        const area = getQuestionArea();
-        let total = 0;
-        let found = false;
-
-        // 0. Use intercepted network answer if available
-        if (currentAnswerFromNetwork) {
-            log('Using intercepted network answer: ' + currentAnswerFromNetwork);
-            return currentAnswerFromNetwork;
-        }
-
-        // 1. Check intercepted answers list (older ones)
-        if (interceptedAnswers.length > 0) {
-            const lastAns = interceptedAnswers[interceptedAnswers.length - 1];
-            const num = parseInt(lastAns.replace(/,/g, ''));
-            if (!isNaN(num)) {
-                log('Using intercepted answer: ' + num);
-                return num.toString();
-            }
-        }
-
-        // 2. Look for explicit values in aria-label, title, alt
-        const allEls = area.querySelectorAll('*');
-        for (const el of allEls) {
-            if (el.offsetParent === null) continue;
-            const attrs = [el.getAttribute('aria-label'), el.getAttribute('title'), el.getAttribute('alt')];
-            for (const attr of attrs) {
-                if (!attr) continue;
-                const num = parseInt(attr.replace(/,/g, ''));
-                if (!isNaN(num)) {
-                    total += num;
-                    found = true;
-                    log('Found attr number: ' + attr + ' = ' + num);
-                    continue;
-                }
-                const wordMatch = attr.match(/(\d+)\s*(ones?|tens?|hundreds?|thousands?)/i);
-                if (wordMatch) {
-                    const value = parseInt(wordMatch[1]);
-                    const unit = wordMatch[2].toLowerCase();
-                    if (unit.includes('one')) {
-                        total += value;
-                        found = true;
-                        log('Found ones in attribute: ' + attr + ' -> ' + value);
-                    }
-                }
-            }
-        }
-
-        // 3. SVG text numbers
-        const texts = area.querySelectorAll('svg text, svg tspan');
-        for (const t of texts) {
-            if (t.offsetParent === null) continue;
-            const txt = t.textContent.trim();
-            const num = parseInt(txt.replace(/,/g, ''));
-            if (!isNaN(num)) {
-                total += num;
-                found = true;
-                log('Found SVG text: ' + txt + ' = ' + num);
-            }
-        }
-
-        // 4. Fallback: count only cube-like elements
-        if (!found) {
-            const possibleCubes = area.querySelectorAll('[class*="cube"], [class*="unit"], [class*="one"]');
-            let cubeCount = 0;
-            for (const el of possibleCubes) {
-                if (el.offsetParent === null) continue;
-                const cls = el.className || '';
-                if (/rod|ten|hundred|flat|long/i.test(cls)) continue;
-                cubeCount++;
-            }
-            if (cubeCount > 0) {
-                total = cubeCount;
-                found = true;
-                log('Counted cube-like elements: ' + cubeCount);
-            }
-        }
-
-        return found ? total.toString() : null;
-    }
-
     async function getAIChoiceIndex(question, choices) {
         const prompt = `Question:\n${question}\n\nAnswer choices:\n${choices.map((c,i)=>`${i+1}. ${c}`).join('\n')}\n\nOutput ONLY the number of the correct choice (1-based index).`;
         return new Promise((resolve) => {
@@ -645,12 +551,11 @@
             const q = getQuestion();
             if (!q) { log('No question'); await sleep(2000); continue; }
 
-            // If new question, clear currentAnswerFromNetwork and wait a moment for intercept to capture fresh answer
             if (q !== lastQuestion) {
                 currentAnswerFromNetwork = null;
                 lastQuestion = q;
                 sameQuestionStreak = 0;
-                await sleep(1000); // short wait for network interception
+                await sleep(1000); // wait for network interception
             } else {
                 sameQuestionStreak++;
                 if (sameQuestionStreak >= 5) {
@@ -663,11 +568,10 @@
 
             log('Question: ' + q.substring(0,80));
 
-            // First try to use intercepted network answer for any question
+            // 1. Try network answer for any question
             if (currentAnswerFromNetwork) {
                 log('Using network answer: ' + currentAnswerFromNetwork);
                 let answered = false;
-                // Try multiple choice first, then digit input
                 const choices = getAnswerChoices();
                 if (choices.length > 0) {
                     answered = clickByAnswerText(currentAnswerFromNetwork);
@@ -683,13 +587,13 @@
                 }
             }
 
-            // Visual cube counting (if network answer not used)
+            // 2. Visual cube counting (if network answer not used)
             if (/cube/i.test(q) && /shown/i.test(q)) {
                 log('Cube counting question detected.');
-                const cubeValue = countCubesFromDOM();
-                if (cubeValue) {
-                    log('Counted cubes value: ' + cubeValue);
-                    if (inputDigits(cubeValue)) {
+                // try network again maybe after wait
+                if (!currentAnswerFromNetwork) await sleep(1000);
+                if (currentAnswerFromNetwork) {
+                    if (inputDigits(currentAnswerFromNetwork)) {
                         questionCount++;
                         log('Answered ' + questionCount);
                         await sleep(2500);
@@ -712,7 +616,7 @@
                 continue;
             }
 
-            // General visual question skip
+            // 3. General visual question skip
             if (isVisualQuestion(q)) {
                 log('Visual question detected, skipping...');
                 if (clickNextOrSkip()) await sleep(2000);
@@ -720,7 +624,7 @@
                 continue;
             }
 
-            // Fallback to basic math and AI
+            // 4. Fallback to basic math and AI
             let answered = false;
             let ans = solveBasicMath(q);
             if (ans) {
