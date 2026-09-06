@@ -7,17 +7,7 @@
         .container { max-width: 800px; margin: auto; background: white; padding: 25px; border-radius: 10px; box-shadow: 0 0 20px rgba(0,0,0,0.1); }
         h1 { text-align: center; color: #2c3e50; }
         .tab { overflow: hidden; border-bottom: 1px solid #ccc; margin-bottom: 20px; }
-        .tab button {
-            background-color: inherit;
-            float: left;
-            border: none;
-            outline: none;
-            cursor: pointer;
-            padding: 10px 16px;
-            transition: 0.3s;
-            font-size: 16px;
-            color: #000;
-        }
+        .tab button { background-color: inherit; float: left; border: none; outline: none; cursor: pointer; padding: 10px 16px; transition: 0.3s; font-size: 16px; color: #000; }
         .tab button:hover { background-color: #ddd; }
         .tab button.active { background-color: #ccc; color: #000; }
         .tabcontent { display: none; padding: 6px 12px; }
@@ -60,9 +50,7 @@
             </div>
             <div id="history" class="tabcontent">
                 <h3>Generated Keys</h3>
-                <table id="keyTable">
-                    <tr><th>Short ID</th><th>Full Key</th><th>Created</th><th>Duration</th><th>Status</th><th>Action</th></tr>
-                </table>
+                <table id="keyTable"><tr><th>Short ID</th><th>Full Key</th><th>Created</th><th>Duration</th><th>Status</th><th>Action</th></tr></table>
                 <button onclick="refreshHistory()">Refresh</button>
                 <button onclick="clearKeys()" style="background: #e74c3c;">Clear All Keys</button>
             </div>
@@ -72,87 +60,17 @@
             </div>
         </div>
     </div>
-
     <script>
         let authToken = localStorage.getItem('authToken') || '';
-
-        function login() {
-            const u = document.getElementById('username').value;
-            const p = document.getElementById('password').value;
-            authToken = btoa(`${u}:${p}`);
-            localStorage.setItem('authToken', authToken);
-            showMain();
-        }
-
-        function showMain() {
-            document.getElementById('loginSection').style.display = 'none';
-            document.getElementById('mainSection').style.display = 'block';
-            refreshHistory();
-        }
-
-        function openTab(evt, tabName) {
-            const tabcontent = document.getElementsByClassName('tabcontent');
-            for (let i = 0; i < tabcontent.length; i++) tabcontent[i].style.display = 'none';
-            const tablinks = document.getElementsByClassName('tablinks');
-            for (let i = 0; i < tablinks.length; i++) tablinks[i].className = tablinks[i].className.replace(' active', '');
-            document.getElementById(tabName).style.display = 'block';
-            evt.currentTarget.className += ' active';
-        }
-
-        async function apiRequest(endpoint, method = 'GET', body = null) {
-            const headers = { 'Authorization': `Bearer ${authToken}`, 'Content-Type': 'application/json' };
-            const res = await fetch(endpoint, { method, headers, body: body ? JSON.stringify(body) : null });
-            if (res.status === 401) { alert('Unauthorized'); return null; }
-            return await res.json();
-        }
-
-        async function generateKey() {
-            const duration = parseInt(document.getElementById('duration').value);
-            const unit = document.getElementById('unit').value;
-            if (!duration || duration < 1) { alert('Enter valid duration'); return; }
-            const msPerUnit = { minutes: 60000, hours: 3600000, days: 86400000 };
-            const durationMs = duration * msPerUnit[unit];
-            const result = await apiRequest('/api/generate-key', 'POST', { durationMs });
-            if (result && result.key) {
-                document.getElementById('keyOutput').innerHTML = `<strong>Your key:</strong><br><span class="full-key">${result.key}</span>`;
-                refreshHistory();
-            } else {
-                alert('Error generating key');
-            }
-        }
-
-        async function refreshHistory() {
-            const keys = await apiRequest('/api/keys');
-            if (!keys) return;
-            const table = document.getElementById('keyTable');
-            table.innerHTML = '<tr><th>Short ID</th><th>Full Key</th><th>Created</th><th>Duration</th><th>Status</th><th>Action</th></tr>';
-            keys.forEach(k => {
-                const row = table.insertRow();
-                const status = k.revoked ? 'revoked' : (k.status === 'expired' ? 'expired' : 'active');
-                row.innerHTML = `
-                    <td>${k.id.slice(0,8)}...</td>
-                    <td class="full-key">${k.fullKey || 'N/A'}</td>
-                    <td>${new Date(k.created).toLocaleString()}</td>
-                    <td>${(k.duration/60000).toFixed(0)} min</td>
-                    <td class="${status}">${status}</td>
-                    <td>${k.revoked ? '' : `<button onclick="revokeKey('${k.id}')">Delete</button>`}</td>
-                `;
-            });
-        }
-
-        async function revokeKey(id) {
-            await apiRequest('/api/revoke-key', 'POST', { keyId: id });
-            refreshHistory();
-        }
-
-        async function clearKeys() {
-            if (confirm('Are you sure you want to delete ALL keys?')) {
-                await apiRequest('/api/clear-keys', 'GET');
-                refreshHistory();
-            }
-        }
-
-        if (authToken) showMain();
+        function login() { const u = document.getElementById('username').value; const p = document.getElementById('password').value; authToken = btoa(`${u}:${p}`); localStorage.setItem('authToken', authToken); showMain(); }
+        function showMain() { document.getElementById('loginSection').style.display='none'; document.getElementById('mainSection').style.display='block'; refreshHistory(); }
+        function openTab(evt, tabName) { const tc = document.getElementsByClassName('tabcontent'); for(let i=0;i<tc.length;i++) tc[i].style.display='none'; const tl=document.getElementsByClassName('tablinks'); for(let i=0;i<tl.length;i++) tl[i].className = tl[i].className.replace(' active',''); document.getElementById(tabName).style.display='block'; evt.currentTarget.className += ' active'; }
+        async function apiRequest(endpoint, method='GET', body=null) { const headers={'Authorization':`Bearer ${authToken}`,'Content-Type':'application/json'}; const res = await fetch(endpoint,{method,headers,body:body?JSON.stringify(body):null}); if(res.status===401){alert('Unauthorized'); return null;} return await res.json(); }
+        async function generateKey() { const duration=parseInt(document.getElementById('duration').value); const unit=document.getElementById('unit').value; if(!duration||duration<1){alert('Enter valid duration');return;} const msPerUnit={minutes:60000,hours:3600000,days:86400000}; const durationMs=duration*msPerUnit[unit]; const result=await apiRequest('/api/generate-key','POST',{durationMs}); if(result&&result.key){document.getElementById('keyOutput').innerHTML=`<strong>Your key:</strong><br><span class="full-key">${result.key}</span>`; refreshHistory();} else alert('Error generating key'); }
+        async function refreshHistory() { const keys=await apiRequest('/api/keys'); if(!keys) return; const table=document.getElementById('keyTable'); table.innerHTML='<tr><th>Short ID</th><th>Full Key</th><th>Created</th><th>Duration</th><th>Status</th><th>Action</th></tr>'; keys.forEach(k=>{ const row=table.insertRow(); const status=k.revoked?'revoked':(k.status==='expired'?'expired':'active'); row.innerHTML=`<td>${k.id.slice(0,8)}...</td><td class="full-key">${k.fullKey||'N/A'}</td><td>${new Date(k.created).toLocaleString()}</td><td>${(k.duration/60000).toFixed(0)} min</td><td class="${status}">${status}</td><td>${k.revoked?'':`<button onclick="revokeKey('${k.id}')">Delete</button>`}</td>`; }); }
+        async function revokeKey(id) { await apiRequest('/api/revoke-key','POST',{keyId:id}); refreshHistory(); }
+        async function clearKeys() { if(confirm('Are you sure you want to delete ALL keys?')) { await apiRequest('/api/clear-keys','GET'); refreshHistory(); } }
+        if(authToken) showMain();
     </script>
 </body>
 </html>
