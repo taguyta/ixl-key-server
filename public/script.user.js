@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IXL Auto Answerer
 // @namespace    http://tampermonkey.net/
-// @version      16.14
-// @description  Auto answer IXL with server-validated license key, draggable panel, AI + basic math
+// @version      16.15
+// @description  Auto answer IXL with server-validated license key, draggable panel, robust option matching
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -22,7 +22,7 @@
     const GROQ_API_KEY = "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";
     const MODEL = "groq/compound";
     const SERVER = "https://ixl-key-server.onrender.com";
-    const VERSION = "16.14";
+    const VERSION = "16.15";
 
     let licenseKey = GM_getValue('license_key', '');
     let running = false;
@@ -127,43 +127,46 @@
         return '';
     }
 
+    // Enhanced option matching
+    function findAnswerElement(ans) {
+        // Create a list of all candidate clickable elements
+        const all = document.querySelectorAll('button, label, li, div, span, [role="button"], [role="radio"], [class*="choice"], [class*="option"], [class*="answer"]');
+        const ansNums = ans.match(/-?\d+/g) ? ans.match(/-?\d+/g).map(Number).sort((a,b)=>a-b) : null;
+
+        for (const el of all) {
+            if (el.offsetParent === null || el.closest('#ixl-panel') || el.closest('#ixl-loader')) continue;
+            const text = (el.innerText || el.textContent || '').trim();
+            if (!text) continue;
+
+            // Exact normalized text match
+            if (text.replace(/\s+/g,'').toLowerCase() === ans.replace(/\s+/g,'').toLowerCase()) {
+                return el;
+            }
+
+            // Set match (numbers in any order)
+            if (ansNums && text.includes('{')) {
+                const textNums = text.match(/-?\d+/g).map(Number).sort((a,b)=>a-b);
+                if (ansNums.length === textNums.length && ansNums.every((v,i)=>v===textNums[i])) {
+                    return el;
+                }
+            }
+        }
+        return null;
+    }
+
     function inputAnswer(ans) {
         ans = String(ans).trim();
         log('Trying to input: ' + ans);
 
-        // Multiple choice: exact text match
-        const opts = document.querySelectorAll('[class*="choice"], [class*="option"], [class*="answer"], label, button, li');
-        for (const o of opts) {
-            if (o.offsetParent === null) continue;
-            const text = (o.innerText || o.textContent || '').trim();
-            if (!text) continue;
-            if (text.replace(/\s+/g,'').toLowerCase() === ans.replace(/\s+/g,'').toLowerCase()) {
-                log('Exact match: ' + text);
-                o.click();
-                setTimeout(() => clickSubmit(), 200);
-                return true;
-            }
+        const target = findAnswerElement(ans);
+        if (target) {
+            log('Found answer element: ' + (target.innerText || target.textContent || '').trim().substring(0,50));
+            target.click();
+            setTimeout(() => clickSubmit(), 300);
+            return true;
         }
 
-        // Set matching
-        let ansNums = null;
-        if (ans.includes('{')) ansNums = ans.match(/-?\d+/g).map(Number).sort((a,b)=>a-b);
-        if (ansNums) {
-            for (const o of opts) {
-                if (o.offsetParent === null) continue;
-                const text = (o.innerText || o.textContent || '').trim();
-                if (!text || !text.includes('{')) continue;
-                const nums = text.match(/-?\d+/g).map(Number).sort((a,b)=>a-b);
-                if (ansNums.length === nums.length && ansNums.every((v,i)=>v===nums[i])) {
-                    log('Set match: ' + text);
-                    o.click();
-                    setTimeout(() => clickSubmit(), 200);
-                    return true;
-                }
-            }
-        }
-
-        // Digit boxes
+        // Digit boxes fallback
         const inputs = [...document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])')]
             .filter(i => i.offsetParent !== null && !i.closest('#ixl-panel'));
         if (inputs.length === 0) { log('No input found'); return false; }
@@ -195,11 +198,11 @@
     }
 
     async function aiAnswer(q) {
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve) => {
             GM_xmlhttpRequest({
                 method:'POST', url:'https://api.groq.com/openai/v1/chat/completions',
                 headers:{'Content-Type':'application/json','Authorization':'Bearer '+GROQ_API_KEY},
-                data:JSON.stringify({model:MODEL, messages:[{role:'system',content:'Answer with ONLY the final answer.'},{role:'user',content:q}], temperature:0.1, max_tokens:150}),
+                data:JSON.stringify({model:MODEL, messages:[{role:'system',content:'Answer with ONLY the final answer, preserving set notation if applicable.'},{role:'user',content:q}], temperature:0.1, max_tokens:150}),
                 onload: res => { try { const d=JSON.parse(res.responseText); resolve(d.choices[0].message.content.trim()); } catch(e){ resolve(null); } },
                 onerror: () => resolve(null)
             });
