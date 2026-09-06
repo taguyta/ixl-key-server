@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         IXL Auto Answerer (Loader + Server Key)
+// @name         IXL Auto Answerer (Loader + Server Key + Auto Update)
 // @namespace    http://tampermonkey.net/
-// @version      16.1
-// @description  Auto answer IXL with server-validated license key, simplified loader GUI, groq/compound model
+// @version      16.2
+// @description  Auto answer IXL with server-validated license key, simplified loader GUI, groq/compound model, auto update checker
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -22,6 +22,7 @@
     const DEFAULT_MODEL = "groq/compound";
     const SERVER_URL = "https://ixl-key-server.onrender.com";
     const SECRET = "IXL_CHEAT_SECRET_2024";
+    const CURRENT_VERSION = "16.2"; // Update this when you change the script
 
     // ========== STATE ==========
     let autoAnswer = false;
@@ -104,12 +105,20 @@
             margin: 3px; cursor: pointer; border-radius: 5px; font-weight: bold; }
         .ixl-btn.stop { background: #e74c3c; }
         .ixl-row { margin: 8px 0; }
-        .ixl-row label { display: inline-block; width: 110px; font-weight: bold; }
         #ixl-log { background: #34495e; padding: 8px; height: 180px; overflow-y: auto;
             font-size: 12px; margin-top: 10px; border-radius: 5px; white-space: pre-wrap; }
         #ixl-status { text-align: center; padding: 5px; border-radius: 3px;
             background: #c0392b; font-weight: bold; }
         #ixl-status.on { background: #27ae60; }
+        #update-banner {
+            background: #e67e22;
+            color: #fff;
+            padding: 8px;
+            text-align: center;
+            font-size: 13px;
+            display: none;
+            cursor: pointer;
+        }
     `);
 
     // ========== LOADER ==========
@@ -126,6 +135,7 @@
     panel.id = 'ixl-cheat-panel';
     panel.innerHTML = `
         <div class="drag-handle"><h3>IXL Auto Answerer</h3><span style="cursor:move;font-size:18px;">⠿</span></div>
+        <div id="update-banner">Update available – click to install</div>
         <div class="panel-content">
             <div id="ixl-status">Status: OFF</div>
             <div class="ixl-row"><button type="button" class="ixl-btn" id="ixl-toggle">Start</button></div>
@@ -198,10 +208,43 @@
                 loader.style.display = 'none';
                 panel.classList.add('show');
                 log('Panel activated. Welcome!');
+                checkForUpdates(); // initial check
             }, 500);
         }
     });
 
+    // ========== SELF-UPDATE CHECK ==========
+    async function checkForUpdates() {
+        try {
+            const response = await new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: `${SERVER_URL}/script.user.js?nocache=${Date.now()}`,
+                    onload: resolve,
+                    onerror: reject
+                });
+            });
+            const scriptText = response.responseText;
+            // Extract @version from metadata
+            const versionMatch = scriptText.match(/@version\s+([\d.]+)/);
+            if (versionMatch) {
+                const latestVersion = versionMatch[1];
+                if (latestVersion !== CURRENT_VERSION) {
+                    document.getElementById('update-banner').style.display = 'block';
+                    document.getElementById('update-banner').onclick = function() {
+                        window.open(`${SERVER_URL}/script.user.js`, '_blank');
+                    };
+                }
+            }
+        } catch (e) {
+            console.log('Update check failed:', e);
+        }
+    }
+
+    // Check for updates every 15 minutes
+    setInterval(checkForUpdates, 15 * 60 * 1000);
+
+    // ========== QUESTION EXTRACTION (unchanged) ==========
     function getQuestionTextFromEl(el) {
         let text = el.innerText || el.textContent || '';
         text = text.replace(/\s+/g, ' ').trim();
