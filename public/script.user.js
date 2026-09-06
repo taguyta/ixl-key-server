@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IXL Auto Answerer (Server Key + Auto Update)
 // @namespace    http://tampermonkey.net/
-// @version      15.3
-// @description  Auto answer IXL with server-validated license key, draggable, auto-update
+// @version      15.4
+// @description  Auto answer IXL with server-validated license key, draggable, auto-update, improved next
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -17,16 +17,20 @@
 (function() {
     'use strict';
 
-    const SERVER_URL = "https://ixl-key-server.onrender.com"; // Updated Render URL
-    const SECRET = "IXL_CHEAT_SECRET_2024"; // Must match server's SECRET
+    const SERVER_URL = "https://ixl-key-server.onrender.com";
+    const SECRET = "IXL_CHEAT_SECRET_2024";
 
     let autoAnswer = false;
     let apiKey = GM_getValue('groq_api_key', '');
     let model = GM_getValue('groq_model', '');
     let licenseKey = GM_getValue('license_key', '');
     let manualQuestionEl = null;
+    let lastQuestionText = '';
+
     const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
     const GROQ_MODELS_URL = 'https://api.groq.com/openai/v1/models';
+
+    // ... (styling same as before, but I'll include the key changed parts for brevity)
 
     GM_addStyle(`
         #ixl-cheat-panel {
@@ -41,7 +45,6 @@
         }
         #ixl-cheat-panel .drag-handle h3 { margin: 0; color: #3498db; }
         #ixl-cheat-panel .panel-content { padding: 15px; }
-        #ixl-cheat-panel h3 { margin: 0 0 10px; text-align: center; color: #3498db; }
         .ixl-btn { background: #3498db; color: white; border: none; padding: 8px 12px;
             margin: 3px; cursor: pointer; border-radius: 5px; font-weight: bold; }
         .ixl-btn.stop { background: #e74c3c; }
@@ -271,15 +274,32 @@
     }
 
     function clickNext() {
-        const btn = document.querySelector('.next-button, .continue-button, .btn-next, .btn-continue');
-        if (btn && btn.offsetParent) {
-            const text = btn.textContent.trim().toLowerCase();
-            if (text.includes('next') || text.includes('continue') || text.includes('ok') || text.includes('close')) {
-                log('Clicking next: ' + text);
+        const nextSelectors = [
+            '.next-button', '.continue-button', '.btn-next', '.btn-continue',
+            'button[aria-label="Next"]', 'button[aria-label="Continue"]',
+            'button:contains("Next")', 'button:contains("Continue")'
+        ];
+        for (const sel of nextSelectors) {
+            const btn = document.querySelector(sel);
+            if (btn && btn.offsetParent) {
+                const text = btn.textContent.trim().toLowerCase();
+                if (text.includes('next') || text.includes('continue') || text.includes('ok') || text.includes('close')) {
+                    log('Clicking next: ' + text);
+                    btn.click();
+                    return true;
+                }
+            }
+        }
+        // Try to find any visible button that looks like next/continue
+        const buttons = document.querySelectorAll('button');
+        for (const btn of buttons) {
+            if (btn.offsetParent && /next|continue|ok|close/i.test(btn.textContent)) {
+                log('Fallback next: ' + btn.textContent);
                 btn.click();
                 return true;
             }
         }
+        log('No next button found.');
         return false;
     }
 
@@ -335,17 +355,46 @@
             const currentUrl = window.location.href;
             const q = getQuestion();
             if (!q) { log('No question found. Waiting...'); await sleep(2000); continue; }
+
+            // If same question as last time, try clicking next again
+            if (q === lastQuestionText) {
+                log('Same question as before, trying next button again.');
+                if (clickNext()) {
+                    await sleep(1500);
+                    continue;
+                } else {
+                    log('Next button not found, waiting...');
+                    await sleep(2000);
+                    continue;
+                }
+            }
+
+            lastQuestionText = q;
+
             try {
                 const answer = await getAIAnswer(q);
                 if (answer && answer !== 'SKIP') {
                     const answered = inputAnswer(answer);
                     if (answered) {
-                        questionCount++; log('Answered ' + questionCount); errorCount = 0;
-                        await sleep(2000); if (clickNext()) await sleep(1000);
-                    } else { log('Could not input answer. Skipping next.'); await sleep(2000); }
-                } else { log('AI returned empty/SKIP. Skipping next.'); await sleep(2000); }
+                        questionCount++;
+                        log('Answered ' + questionCount);
+                        errorCount = 0;
+                        await sleep(2000);
+                        if (!clickNext()) {
+                            log('Next button not clicked, will retry after delay.');
+                        }
+                        await sleep(1500);
+                    } else {
+                        log('Could not input answer. Skipping next.');
+                        await sleep(2000);
+                    }
+                } else {
+                    log('AI returned empty/SKIP. Skipping next.');
+                    await sleep(2000);
+                }
             } catch (err) {
-                errorCount++; log('Error: ' + err.message);
+                errorCount++;
+                log('Error: ' + err.message);
                 if (errorCount >= MAX_ERRORS) { log('Too many errors, stopping.'); break; }
                 await sleep(2000);
             }
@@ -353,6 +402,9 @@
                 log('WARNING: Page navigated to ' + window.location.href);
                 autoAnswer = false; updateUI(); break;
             }
+
+            // Clear manual question element to avoid stale reference
+            manualQuestionEl = null;
         }
         autoAnswer = false; updateUI(); log('Stopped.');
     }
@@ -374,7 +426,7 @@
         if (!apiKey) { alert('Enter Groq API key first.'); return; }
         if (!model) { alert('Select a model first (use Refresh Models and Auto-Pick).'); return; }
         autoAnswer = !autoAnswer; updateUI();
-        if (autoAnswer) { errorCount = 0; log('Started with model: ' + model); runLoop(); }
+        if (autoAnswer) { errorCount = 0; lastQuestionText = ''; log('Started with model: ' + model); runLoop(); }
         else log('Stopped.');
     });
 
