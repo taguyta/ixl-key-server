@@ -1,14 +1,13 @@
 // ==UserScript==
 // @name         Tempest Hub
 // @namespace    http://tampermonkey.net/
-// @version      18.3
-// @description  Multi-cheat hub for school platforms. License required. Advanced answer extraction, cube counter via image analysis, settings.
+// @version      18.5
+// @description  Multi-cheat hub for school platforms. License required. Uses intercepted answers for all question types.
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
-// @grant        GM_registerMenuCommand
 // @connect      ixl-key-server.onrender.com
 // @connect      api.groq.com
 // @updateURL    https://ixl-key-server.onrender.com/script.user.js
@@ -24,7 +23,7 @@
     const GROQ_API_KEY = "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";
     const MODEL = "groq/compound";
     const SERVER = "https://ixl-key-server.onrender.com";
-    const VERSION = "18.3";
+    const VERSION = "18.5";
 
     // ==================== STATE ====================
     let licenseKey = GM_getValue('license_key', '');
@@ -34,10 +33,15 @@
     let sameQuestionStreak = 0;
     let lastQuestion = '';
     let updateRequired = false;
-    let snowEnabled = GM_getValue('snowEnabled', false);
+
+    // User customization
     let panelBgColor = GM_getValue('panelBgColor', '#2c3e50');
     let panelTextColor = GM_getValue('panelTextColor', '#ffffff');
+    let snowEnabled = GM_getValue('snowEnabled', false);
+
+    // Network interception storage
     let interceptedAnswers = [];
+    let currentAnswerFromNetwork = null;
 
     // ==================== STYLES ====================
     GM_addStyle(`
@@ -76,6 +80,51 @@
     `);
 
     // ==================== NETWORK INTERCEPTION ====================
+    function extractNumberBlocks(data) {
+        function search(obj) {
+            if (!obj || typeof obj !== 'object') return null;
+            if (Array.isArray(obj.numberBlocksByDigits)) {
+                return obj.numberBlocksByDigits;
+            }
+            for (const key in obj) {
+                const res = search(obj[key]);
+                if (res) return res;
+            }
+            return null;
+        }
+        return search(data);
+    }
+
+    function extractPossibleAnswers(text) {
+        try {
+            const data = JSON.parse(text);
+            // Check for numberBlocksByDigits
+            const digits = extractNumberBlocks(data);
+            if (digits && digits.length > 0) {
+                const answer = digits.join('');
+                interceptedAnswers.push(answer);
+                currentAnswerFromNetwork = answer;
+                console.log('[Tempest] Found numberBlocksByDigits:', digits, '=> answer:', answer);
+                return;
+            }
+            // Generic search for answer/correct keys
+            function search(obj) {
+                if (!obj || typeof obj !== 'object') return;
+                for (const key in obj) {
+                    const value = obj[key];
+                    if (typeof value === 'string' && /answer|correct|solution/i.test(key)) {
+                        interceptedAnswers.push(value);
+                        currentAnswerFromNetwork = value;
+                        console.log('[Tempest] Found answer:', value);
+                    } else if (typeof value === 'object') {
+                        search(value);
+                    }
+                }
+            }
+            search(data);
+        } catch(e) {}
+    }
+
     function installNetworkHooks() {
         const originalFetch = window.fetch;
         window.fetch = async function(...args) {
@@ -83,7 +132,7 @@
             const cloned = response.clone();
             try {
                 const text = await cloned.text();
-                if (text.includes('"answer"') || text.includes('"correct"') || text.includes('"solution"')) {
+                if (text.includes('numberBlocksByDigits') || text.includes('"answer"') || text.includes('"correct"') || text.includes('"solution"')) {
                     console.log('[Tempest] Intercepted fetch:', args[0], text.substring(0, 500));
                     extractPossibleAnswers(text);
                 }
@@ -95,7 +144,7 @@
         XMLHttpRequest.prototype.open = function(method, url, ...rest) {
             this.addEventListener('load', function() {
                 try {
-                    if (this.responseText && (this.responseText.includes('"answer"') || this.responseText.includes('"correct"') || this.responseText.includes('"solution"'))) {
+                    if (this.responseText && (this.responseText.includes('numberBlocksByDigits') || this.responseText.includes('"answer"') || this.responseText.includes('"correct"') || this.responseText.includes('"solution"'))) {
                         console.log('[Tempest] XHR response:', url, this.responseText.substring(0, 500));
                         extractPossibleAnswers(this.responseText);
                     }
@@ -103,25 +152,6 @@
             });
             origXHROpen.call(this, method, url, ...rest);
         };
-    }
-
-    function extractPossibleAnswers(text) {
-        try {
-            const data = JSON.parse(text);
-            function search(obj) {
-                if (!obj || typeof obj !== 'object') return;
-                for (const key in obj) {
-                    const value = obj[key];
-                    if (typeof value === 'string' && /answer|correct|solution/i.test(key)) {
-                        interceptedAnswers.push(value);
-                        console.log('[Tempest] Found answer:', value);
-                    } else if (typeof value === 'object') {
-                        search(value);
-                    }
-                }
-            }
-            search(data);
-        } catch(e) {}
     }
 
     installNetworkHooks();
@@ -494,13 +524,19 @@
         return /shown|cube|picture|graph|figure|tens|ones|base[- ]ten|count the/i.test(questionText);
     }
 
-    // ==================== CUBE COUNTER (FIXED) ====================
+    // ==================== CUBE COUNTER (with network answer) ====================
     function countCubesFromDOM() {
         const area = getQuestionArea();
         let total = 0;
         let found = false;
 
-        // 1. Check intercepted answers first
+        // 0. Use intercepted network answer if available
+        if (currentAnswerFromNetwork) {
+            log('Using intercepted network answer: ' + currentAnswerFromNetwork);
+            return currentAnswerFromNetwork;
+        }
+
+        // 1. Check intercepted answers list (older ones)
         if (interceptedAnswers.length > 0) {
             const lastAns = interceptedAnswers[interceptedAnswers.length - 1];
             const num = parseInt(lastAns.replace(/,/g, ''));
@@ -550,7 +586,7 @@
             }
         }
 
-        // 4. Fallback: count only cube-like elements, exclude rods/tens/hundreds
+        // 4. Fallback: count only cube-like elements
         if (!found) {
             const possibleCubes = area.querySelectorAll('[class*="cube"], [class*="unit"], [class*="one"]');
             let cubeCount = 0;
@@ -570,7 +606,6 @@
         return found ? total.toString() : null;
     }
 
-    // ==================== AI HELPERS ====================
     async function getAIChoiceIndex(question, choices) {
         const prompt = `Question:\n${question}\n\nAnswer choices:\n${choices.map((c,i)=>`${i+1}. ${c}`).join('\n')}\n\nOutput ONLY the number of the correct choice (1-based index).`;
         return new Promise((resolve) => {
@@ -605,25 +640,50 @@
         });
     }
 
-    // ==================== MAIN LOOP ====================
     async function runIXLLoop() {
         while (running) {
             const q = getQuestion();
             if (!q) { log('No question'); await sleep(2000); continue; }
-            if (q === lastQuestion) {
+
+            // If new question, clear currentAnswerFromNetwork and wait a moment for intercept to capture fresh answer
+            if (q !== lastQuestion) {
+                currentAnswerFromNetwork = null;
+                lastQuestion = q;
+                sameQuestionStreak = 0;
+                await sleep(1000); // short wait for network interception
+            } else {
                 sameQuestionStreak++;
                 if (sameQuestionStreak >= 5) {
                     log('Stuck. Trying skip...');
                     if (!clickNextOrSkip()) await sleep(10000);
                     sameQuestionStreak = 0;
+                    continue;
                 }
-            } else {
-                sameQuestionStreak = 0;
-                lastQuestion = q;
             }
+
             log('Question: ' + q.substring(0,80));
 
-            // Visual cube counting
+            // First try to use intercepted network answer for any question
+            if (currentAnswerFromNetwork) {
+                log('Using network answer: ' + currentAnswerFromNetwork);
+                let answered = false;
+                // Try multiple choice first, then digit input
+                const choices = getAnswerChoices();
+                if (choices.length > 0) {
+                    answered = clickByAnswerText(currentAnswerFromNetwork);
+                } else {
+                    answered = inputDigits(currentAnswerFromNetwork);
+                }
+                if (answered) {
+                    questionCount++;
+                    log('Answered ' + questionCount);
+                    await sleep(2500);
+                    if (!clickNextOrSkip()) await sleep(1000);
+                    continue;
+                }
+            }
+
+            // Visual cube counting (if network answer not used)
             if (/cube/i.test(q) && /shown/i.test(q)) {
                 log('Cube counting question detected.');
                 const cubeValue = countCubesFromDOM();
@@ -660,6 +720,7 @@
                 continue;
             }
 
+            // Fallback to basic math and AI
             let answered = false;
             let ans = solveBasicMath(q);
             if (ans) {
