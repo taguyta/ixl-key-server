@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Tempest Hub
 // @namespace    http://tampermonkey.net/
-// @version      18.1
-// @description  Multi-cheat hub for school platforms. License required. Enhanced answer extraction.
+// @version      18.2
+// @description  Multi-cheat hub for school platforms. License required. Enhanced answer extraction, cube counter fix.
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -23,7 +23,7 @@
     const GROQ_API_KEY = "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";
     const MODEL = "groq/compound";
     const SERVER = "https://ixl-key-server.onrender.com";
-    const VERSION = "18.1";
+    const VERSION = "18.2";
 
     // ==================== STATE ====================
     let licenseKey = GM_getValue('license_key', '');
@@ -39,8 +39,8 @@
     let panelTextColor = GM_getValue('panelTextColor', '#ffffff');
     let snowEnabled = GM_getValue('snowEnabled', false);
 
-    // Network interception
-    let interceptedAnswers = [];   // store extracted answers or hints
+    // Network interception storage
+    let interceptedAnswers = [];
 
     // ==================== STYLES ====================
     GM_addStyle(`
@@ -86,7 +86,6 @@
             const cloned = response.clone();
             try {
                 const text = await cloned.text();
-                // Look for answer-related keywords in JSON responses
                 if (text.includes('"answer"') || text.includes('"correct"') || text.includes('"solution"')) {
                     console.log('[Tempest] Intercepted fetch:', args[0], text.substring(0, 500));
                     extractPossibleAnswers(text);
@@ -112,7 +111,6 @@
     function extractPossibleAnswers(text) {
         try {
             const data = JSON.parse(text);
-            // Recursively search for keys containing 'answer' or 'correct'
             function search(obj) {
                 if (!obj || typeof obj !== 'object') return;
                 for (const key in obj) {
@@ -500,23 +498,13 @@
         return /shown|cube|picture|graph|figure|tens|ones|base[- ]ten|count the/i.test(questionText);
     }
 
-    // Enhanced cube counting using multiple methods
+    // FIXED CUBE COUNTER
     function countCubesFromDOM() {
         const area = getQuestionArea();
         let total = 0;
         let found = false;
 
-        // Check intercepted answers first
-        if (interceptedAnswers.length > 0) {
-            const lastAns = interceptedAnswers[interceptedAnswers.length - 1];
-            const num = parseInt(lastAns.replace(/,/g, ''));
-            if (!isNaN(num)) {
-                log('Using intercepted answer: ' + num);
-                return num.toString();
-            }
-        }
-
-        // Method 1: Look for aria-label, title, alt attributes containing numbers
+        // 1. Attribute values (aria-label, title, alt)
         const allEls = area.querySelectorAll('*');
         for (const el of allEls) {
             if (el.offsetParent === null) continue;
@@ -531,23 +519,21 @@
                     log('Found attr number: ' + attr + ' = ' + num);
                     continue;
                 }
-                // Words: "5 ones", "2 tens"
+                // Word match: "5 ones" (ignore tens/hundreds)
                 const wordMatch = attr.match(/(\d+)\s*(ones?|tens?|hundreds?|thousands?)/i);
                 if (wordMatch) {
                     const value = parseInt(wordMatch[1]);
                     const unit = wordMatch[2].toLowerCase();
-                    let multiplier = 1;
-                    if (unit.includes('tens')) multiplier = 10;
-                    else if (unit.includes('hundreds')) multiplier = 100;
-                    else if (unit.includes('thousands')) multiplier = 1000;
-                    total += value * multiplier;
-                    found = true;
-                    log('Found unit in attribute: ' + attr + ' -> ' + value * multiplier);
+                    if (unit.includes('one')) {
+                        total += value;
+                        found = true;
+                        log('Found ones in attribute: ' + attr + ' -> ' + value);
+                    }
                 }
             }
         }
 
-        // Method 2: SVG text numbers
+        // 2. SVG text numbers
         const texts = area.querySelectorAll('svg text, svg tspan');
         for (const t of texts) {
             if (t.offsetParent === null) continue;
@@ -560,22 +546,20 @@
             }
         }
 
-        // Method 3: Image size classification
+        // 3. Fallback: count only cube-like elements, exclude rods/tens/hundreds
         if (!found) {
-            const imgs = area.querySelectorAll('img, svg');
-            let onesCount = 0, tensCount = 0, hundredsCount = 0;
-            for (const img of imgs) {
-                if (img.offsetParent === null) continue;
-                const rect = img.getBoundingClientRect();
-                const areaPx = rect.width * rect.height;
-                if (areaPx < 2000) onesCount++;
-                else if (areaPx < 10000) tensCount++;
-                else hundredsCount++;
+            const possibleCubes = area.querySelectorAll('[class*="cube"], [class*="unit"], [class*="one"]');
+            let cubeCount = 0;
+            for (const el of possibleCubes) {
+                if (el.offsetParent === null) continue;
+                const cls = el.className || '';
+                if (/rod|ten|hundred|flat|long/i.test(cls)) continue;
+                cubeCount++;
             }
-            if (onesCount + tensCount + hundredsCount > 0) {
-                total = onesCount + tensCount * 10 + hundredsCount * 100;
+            if (cubeCount > 0) {
+                total = cubeCount;
                 found = true;
-                log(`Counted by size: ${onesCount} ones, ${tensCount} tens, ${hundredsCount} hundreds => ${total}`);
+                log('Counted cube-like elements: ' + cubeCount);
             }
         }
 
@@ -648,7 +632,6 @@
                     }
                 }
                 log('Cube count failed, trying AI...');
-                // Fallback: ask AI with question text only (may not work)
                 const aiAns = await getAIAnswer(q);
                 if (aiAns && aiAns !== 'SKIP' && inputDigits(aiAns)) {
                     questionCount++;
@@ -672,9 +655,6 @@
             }
 
             let answered = false;
-            // First check if we have intercepted answer that matches this question
-            // (We won't implement matching logic here, but you could store question+answer pairs)
-
             let ans = solveBasicMath(q);
             if (ans) {
                 const choices = getAnswerChoices();
