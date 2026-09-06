@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Tempest Hub
 // @namespace    http://tampermonkey.net/
-// @version      18.11
-// @description  Multi-cheat hub. License required. Robust network answer capture via regex. Full script.
+// @version      18.12
+// @description  Multi-cheat hub. License required. Break-apart subtraction parser + network answer capture.
 // @match        https://www.ixl.com/*
 // @run-at       document-start
 // @grant        GM_xmlhttpRequest
@@ -24,7 +24,7 @@
     const GROQ_API_KEY = "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";
     const MODEL = "groq/compound";
     const SERVER = "https://ixl-key-server.onrender.com";
-    const VERSION = "18.11";
+    const VERSION = "18.12";
 
     // ==================== STATE ====================
     let licenseKey = GM_getValue('license_key', '');
@@ -43,27 +43,46 @@
     // Network interception storage
     let currentAnswerFromNetwork = null;
 
-    // ==================== NETWORK INTERCEPTION (regex based) ====================
+    // ==================== NETWORK INTERCEPTION ====================
     function extractAnswerFromText(text) {
-        // Look for "numberBlocksByDigits":[3,1,6]
-        const regex = /"numberBlocksByDigits"\s*:\s*\[([^\]]+)\]/;
-        const match = text.match(regex);
-        if (match) {
-            const nums = match[1].split(',').map(s => s.trim()).filter(s => /^\d+$/.test(s));
-            if (nums.length > 0) {
-                const ans = nums.join('');
-                currentAnswerFromNetwork = ans;
-                console.log('[Tempest] Captured via regex:', nums, '=>', ans);
-                return;
+        try {
+            const data = JSON.parse(text);
+            // Check for PoseResponse with question object
+            if (data.objectType === "PoseResponse" && data.question) {
+                const questionText = JSON.stringify(data.question);
+                // Detect break-apart subtraction pattern: "Break apart X to help you find Y-Z"
+                const match = questionText.match(/Break apart\s+(\d+)\s+to help you find\s+(\d+)\s*-\s*(\d+)/i);
+                if (match) {
+                    const subtrahend = parseInt(match[1]);
+                    const minuend = parseInt(match[2]);
+                    const onesOfMinuend = minuend % 10;
+                    const firstBox = subtrahend - onesOfMinuend;
+                    const secondBox = minuend - onesOfMinuend;
+                    const thirdBox = minuend - subtrahend;
+                    currentAnswerFromNetwork = [firstBox, secondBox, thirdBox];
+                    console.log('[Tempest] Computed break-apart answers:', currentAnswerFromNetwork);
+                    return;
+                }
             }
-        }
-        // Fallback: look for "answer":"..." or "correct":"..."
-        const ansRegex = /"(?:answer|correct|solution)"\s*:\s*"([^"]+)"/i;
-        const ansMatch = text.match(ansRegex);
-        if (ansMatch) {
-            currentAnswerFromNetwork = ansMatch[1];
-            console.log('[Tempest] Captured answer field:', currentAnswerFromNetwork);
-        }
+            // Fallback to previous regex capture for numberBlocksByDigits
+            const regex = /"numberBlocksByDigits"\s*:\s*\[([^\]]+)\]/;
+            const matchBlocks = text.match(regex);
+            if (matchBlocks) {
+                const nums = matchBlocks[1].split(',').map(s => s.trim()).filter(s => /^\d+$/.test(s));
+                if (nums.length > 0) {
+                    currentAnswerFromNetwork = nums.join('');
+                    console.log('[Tempest] Captured via regex:', nums, '=>', currentAnswerFromNetwork);
+                    return;
+                }
+            }
+            // Fallback to answer/correct/solution fields
+            const ansRegex = /"(?:answer|correct|solution)"\s*:\s*"([^"]+)"/i;
+            const ansMatch = text.match(ansRegex);
+            if (ansMatch) {
+                currentAnswerFromNetwork = ansMatch[1];
+                console.log('[Tempest] Captured answer field:', currentAnswerFromNetwork);
+            }
+        } catch(e) {}
     }
 
     function hookFetch() {
@@ -429,6 +448,24 @@
         }
 
         function inputDigits(ans) {
+            if (Array.isArray(ans)) {
+                // Fill multiple inputs with array values
+                const docs = getAllDocuments();
+                for (const doc of docs) {
+                    const inputs = [...doc.querySelectorAll('input[type="text"], input[type="number"], input:not([type])')]
+                        .filter(i => i.offsetParent !== null && !i.closest('#ixl-panel'));
+                    if (inputs.length >= ans.length) {
+                        for (let i = 0; i < ans.length; i++) {
+                            inputs[i].value = String(ans[i]);
+                            inputs[i].dispatchEvent(new Event('input', { bubbles: true }));
+                            inputs[i].dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                        return true;
+                    }
+                }
+                return false;
+            }
+            // Existing single answer handling
             ans = normalizeMinus(String(ans).trim());
             const docs = getAllDocuments();
             for (const doc of docs) {
@@ -553,10 +590,10 @@
                     log('New question, waiting for network answer...');
                     const netAns = await waitForNetworkAnswer(5000);
                     if (netAns) {
-                        log('Got network answer: ' + netAns);
+                        log('Got network answer: ' + JSON.stringify(netAns));
                         let answered = false;
                         const choices = getAnswerChoices();
-                        if (choices.length > 0) {
+                        if (choices.length > 0 && !Array.isArray(netAns)) {
                             answered = clickByAnswerText(netAns);
                         } else {
                             answered = inputDigits(netAns);
