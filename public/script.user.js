@@ -1,23 +1,23 @@
 // ==UserScript==
 // @name         IXL Auto Answerer (Server Key + Auto Update)
 // @namespace    http://tampermonkey.net/
-// @version      15.2
+// @version      15.3
 // @description  Auto answer IXL with server-validated license key, draggable, auto-update
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
-// @connect      localhost:3000
+// @connect      ixl-key-server.onrender.com
 // @connect      api.groq.com
-// @updateURL    http://localhost:3000/script.user.js
-// @downloadURL  http://localhost:3000/script.user.js
+// @updateURL    https://ixl-key-server.onrender.com/script.user.js
+// @downloadURL  https://ixl-key-server.onrender.com/script.user.js
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    const SERVER_URL = "http://localhost:3000"; // CHANGE to your server URL if deployed
+    const SERVER_URL = "https://ixl-key-server.onrender.com"; // Updated Render URL
     const SECRET = "IXL_CHEAT_SECRET_2024"; // Must match server's SECRET
 
     let autoAnswer = false;
