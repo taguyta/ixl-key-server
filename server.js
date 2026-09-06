@@ -9,8 +9,8 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 const SECRET = "IXL_CHEAT_SECRET_2024";
-const ADMIN_USER = "admin";
-const ADMIN_PASS = "password123"; // change this
+const ADMIN_USER = "tempest";
+const ADMIN_PASS = "20Rudd09"; // change this
 
 const DB_FILE = path.join(__dirname, 'keys.json');
 if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify({ keys: [] }));
