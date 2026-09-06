@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IXL Auto Answerer (Server Key + Auto Update)
 // @namespace    http://tampermonkey.net/
-// @version      15.4
-// @description  Auto answer IXL with server-validated license key, draggable, auto-update, improved next
+// @version      15.5
+// @description  Auto answer IXL with server-validated license key, draggable, auto-update, fixed next and digit alignment
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -25,12 +25,10 @@
     let model = GM_getValue('groq_model', '');
     let licenseKey = GM_getValue('license_key', '');
     let manualQuestionEl = null;
-    let lastQuestionText = '';
+    let lastQuestionTextNormalized = '';
 
     const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
     const GROQ_MODELS_URL = 'https://api.groq.com/openai/v1/models';
-
-    // ... (styling same as before, but I'll include the key changed parts for brevity)
 
     GM_addStyle(`
         #ixl-cheat-panel {
@@ -103,6 +101,10 @@
         d.textContent += '\n[' + new Date().toLocaleTimeString() + '] ' + msg;
         d.scrollTop = d.scrollHeight;
         console.log('[IXL Cheat] ' + msg);
+    }
+
+    function normalizeQuestion(text) {
+        return text.replace(/[,\s]+/g, '').toLowerCase();
     }
 
     async function validateLicenseKey(key, showAlert = false) {
@@ -234,15 +236,25 @@
         const digits = absAnswer.replace(/,/g, '').replace(/[^0-9]/g, '');
         if (!digits) return false;
         const boxCount = digitBoxes.length;
+
+        // Right-align digits into boxes if fewer digits than boxes
         let digitStr = digits;
-        if (digits.length > boxCount) digitStr = digits.slice(-boxCount);
-        else if (digits.length < boxCount) digitStr = digits.padStart(boxCount, '0');
-        log(`Filling ${boxCount} boxes with: ${digitStr}`);
+        if (digits.length > boxCount) {
+            digitStr = digits.slice(-boxCount);
+        } else if (digits.length < boxCount) {
+            // Leave left boxes empty
+            digitStr = ' '.repeat(boxCount - digits.length) + digits; // Use spaces, not zeros
+        }
+
+        log(`Filling ${boxCount} boxes with: ${digitStr.trim()}`);
+
         for (let i = 0; i < boxCount; i++) {
-            digitBoxes[i].value = digitStr[i];
+            const char = digitStr[i] === ' ' ? '' : digitStr[i];
+            digitBoxes[i].value = char;
             digitBoxes[i].dispatchEvent(new Event('input', { bubbles: true }));
             digitBoxes[i].dispatchEvent(new Event('change', { bubbles: true }));
         }
+
         setTimeout(() => clickSubmitButton(digitBoxes), 700);
         return true;
     }
@@ -290,7 +302,6 @@
                 }
             }
         }
-        // Try to find any visible button that looks like next/continue
         const buttons = document.querySelectorAll('button');
         for (const btn of buttons) {
             if (btn.offsetParent && /next|continue|ok|close/i.test(btn.textContent)) {
@@ -356,20 +367,20 @@
             const q = getQuestion();
             if (!q) { log('No question found. Waiting...'); await sleep(2000); continue; }
 
-            // If same question as last time, try clicking next again
-            if (q === lastQuestionText) {
-                log('Same question as before, trying next button again.');
+            const normalizedQ = normalizeQuestion(q);
+            if (normalizedQ === lastQuestionTextNormalized) {
+                log('Same question detected, trying next button.');
                 if (clickNext()) {
-                    await sleep(1500);
+                    await sleep(2000);
                     continue;
                 } else {
-                    log('Next button not found, waiting...');
-                    await sleep(2000);
+                    log('Next button not found, waiting 3s...');
+                    await sleep(3000);
                     continue;
                 }
             }
 
-            lastQuestionText = q;
+            lastQuestionTextNormalized = normalizedQ;
 
             try {
                 const answer = await getAIAnswer(q);
@@ -379,31 +390,38 @@
                         questionCount++;
                         log('Answered ' + questionCount);
                         errorCount = 0;
-                        await sleep(2000);
+                        await sleep(2500); // longer wait for submit feedback
                         if (!clickNext()) {
-                            log('Next button not clicked, will retry after delay.');
+                            log('Next button not clicked, will retry after 2s.');
+                            await sleep(2000);
+                            clickNext(); // second try
                         }
-                        await sleep(1500);
                     } else {
                         log('Could not input answer. Skipping next.');
                         await sleep(2000);
+                        clickNext();
                     }
                 } else {
                     log('AI returned empty/SKIP. Skipping next.');
                     await sleep(2000);
+                    clickNext();
                 }
             } catch (err) {
                 errorCount++;
                 log('Error: ' + err.message);
+                if (err.message.includes('Rate limit')) {
+                    log('Rate limit hit, waiting 10s...');
+                    await sleep(10000);
+                } else {
+                    await sleep(2000);
+                }
                 if (errorCount >= MAX_ERRORS) { log('Too many errors, stopping.'); break; }
-                await sleep(2000);
             }
             if (window.location.href !== currentUrl) {
                 log('WARNING: Page navigated to ' + window.location.href);
                 autoAnswer = false; updateUI(); break;
             }
 
-            // Clear manual question element to avoid stale reference
             manualQuestionEl = null;
         }
         autoAnswer = false; updateUI(); log('Stopped.');
@@ -426,8 +444,12 @@
         if (!apiKey) { alert('Enter Groq API key first.'); return; }
         if (!model) { alert('Select a model first (use Refresh Models and Auto-Pick).'); return; }
         autoAnswer = !autoAnswer; updateUI();
-        if (autoAnswer) { errorCount = 0; lastQuestionText = ''; log('Started with model: ' + model); runLoop(); }
-        else log('Stopped.');
+        if (autoAnswer) {
+            errorCount = 0;
+            lastQuestionTextNormalized = '';
+            log('Started with model: ' + model);
+            runLoop();
+        } else log('Stopped.');
     });
 
     document.getElementById('ixl-refresh-models').addEventListener('click', refreshModels);
