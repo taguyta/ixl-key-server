@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         IXL Auto Answerer
 // @namespace    http://tampermonkey.net/
-// @version      16.17
-// @description  Auto answer IXL with server-validated license key, draggable panel, robust choice index AI
+// @version      16.19
+// @description  Auto answer IXL with server-validated license key, draggable panel, universal AI answer handler
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -22,7 +22,7 @@
     const GROQ_API_KEY = "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";
     const MODEL = "groq/compound";
     const SERVER = "https://ixl-key-server.onrender.com";
-    const VERSION = "16.17";
+    const VERSION = "16.19";
 
     let licenseKey = GM_getValue('license_key', '');
     let running = false;
@@ -44,14 +44,12 @@
         #ixl-panel .drag-handle h3 { margin: 0; color: #3498db; font-size: 16px; }
     `);
 
-    // Loader
     const loader = document.createElement('div');
     loader.id = 'ixl-loader';
     loader.innerHTML = `<input type="text" id="ixl-key" placeholder="Enter License Key"><button id="ixl-activate" type="button">Activate</button>`;
     document.body.appendChild(loader);
     if (licenseKey) document.getElementById('ixl-key').value = licenseKey;
 
-    // Panel
     const panel = document.createElement('div');
     panel.id = 'ixl-panel';
     panel.innerHTML = `
@@ -62,7 +60,6 @@
     `;
     document.body.appendChild(panel);
 
-    // Dragging with pointer events
     const dragHandle = panel.querySelector('.drag-handle');
     let isDragging = false, dragOffsetX = 0, dragOffsetY = 0;
     dragHandle.addEventListener('pointerdown', e => {
@@ -129,19 +126,37 @@
         return '';
     }
 
-    // Extract answer choices from DOM (unique texts, likely multiple-choice)
     function getAnswerChoices() {
         const choices = [];
-        const selectors = '[class*="choice"], [class*="option"], [class*="answer"], label, button[role="radio"], li[role="radio"]';
-        const elements = document.querySelectorAll(selectors);
-        for (const el of elements) {
-            if (el.offsetParent === null || el.closest('#ixl-panel') || el.closest('#ixl-loader')) continue;
-            const text = (el.innerText || el.textContent || '').trim();
-            if (text && text.length < 300 && !choices.includes(text)) {
+        const selectors = [
+            '[class*="choice"]', '[class*="option"]', '[class*="answer"]',
+            'label', 'button[role="radio"]', 'li[role="radio"]',
+            '.multiple-choice-option', '.answer-choice', '.crisp-option'
+        ];
+        const seenTexts = new Set();
+        for (const sel of selectors) {
+            const elements = document.querySelectorAll(sel);
+            for (const el of elements) {
+                if (el.offsetParent === null || el.closest('#ixl-panel') || el.closest('#ixl-loader')) continue;
+                let text = (el.innerText || el.textContent || '').trim();
+                if (!text) continue;
+                if (text.length > 300) continue;
+                if (seenTexts.has(text)) continue;
+                seenTexts.add(text);
                 choices.push(text);
             }
         }
-        // Remove the question itself if accidentally included? We'll assume choices are short.
+        if (choices.length === 0) {
+            const allEls = document.querySelectorAll('div, span, p, li');
+            for (const el of allEls) {
+                if (el.offsetParent === null || el.closest('#ixl-panel') || el.closest('#ixl-loader')) continue;
+                const text = (el.innerText || el.textContent || '').trim();
+                if (text && text.includes('(') && text.length < 200 && !seenTexts.has(text)) {
+                    seenTexts.add(text);
+                    choices.push(text);
+                }
+            }
+        }
         return choices;
     }
 
@@ -167,22 +182,84 @@
         });
     }
 
-    function clickChoiceByIndex(index) {
-        const selectors = '[class*="choice"], [class*="option"], [class*="answer"], label, button[role="radio"], li[role="radio"]';
-        const elements = [...document.querySelectorAll(selectors)].filter(el => el.offsetParent !== null && !el.closest('#ixl-panel') && !el.closest('#ixl-loader'));
-        // Collect unique texts and corresponding elements
-        const seen = new Map();
+    function extractNumbers(text) {
+        return (text.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+    }
+
+    function clickByAnswerText(ans) {
+        const selectors = [
+            '[class*="choice"]', '[class*="option"]', '[class*="answer"]',
+            'label', 'button[role="radio"]', 'li[role="radio"]',
+            'div', 'span', 'p', 'li'
+        ];
+        const elements = [...document.querySelectorAll(selectors.join(','))]
+            .filter(el => el.offsetParent !== null && !el.closest('#ixl-panel') && !el.closest('#ixl-loader'));
+
+        const ansNums = extractNumbers(ans);
+        const normalizedAns = ans.replace(/\s+/g, '').toLowerCase();
+
+        // Exact normalized text match
         for (const el of elements) {
             const text = (el.innerText || el.textContent || '').trim();
-            if (text && !seen.has(text)) {
-                seen.set(text, el);
+            if (!text) continue;
+            if (text.replace(/\s+/g, '').toLowerCase() === normalizedAns) {
+                log(`Exact text match: ${text}`);
+                el.click();
+                return true;
             }
         }
-        const choices = [...seen.keys()];
+
+        // Number match (ordered)
+        if (ansNums.length > 0) {
+            for (const el of elements) {
+                const text = (el.innerText || el.textContent || '').trim();
+                if (!text) continue;
+                const textNums = extractNumbers(text);
+                if (textNums.length === ansNums.length && textNums.every((v,i) => v === ansNums[i])) {
+                    log(`Ordered number match: ${text}`);
+                    el.click();
+                    return true;
+                }
+            }
+        }
+
+        // Set match (unordered)
+        if (ansNums.length > 0) {
+            const sortedAns = [...ansNums].sort((a,b) => a-b);
+            for (const el of elements) {
+                const text = (el.innerText || el.textContent || '').trim();
+                if (!text) continue;
+                const textNums = extractNumbers(text);
+                const sortedText = [...textNums].sort((a,b) => a-b);
+                if (sortedText.length === sortedAns.length && sortedText.every((v,i) => v === sortedAns[i])) {
+                    log(`Set match: ${text}`);
+                    el.click();
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    function clickChoiceByIndex(index) {
+        const selectors = [
+            '[class*="choice"]', '[class*="option"]', '[class*="answer"]',
+            'label', 'button[role="radio"]', 'li[role="radio"]'
+        ];
+        const elements = [...document.querySelectorAll(selectors.join(','))]
+            .filter(el => el.offsetParent !== null && !el.closest('#ixl-panel') && !el.closest('#ixl-loader'));
+        const choicesMap = new Map();
+        for (const el of elements) {
+            let text = (el.innerText || el.textContent || '').trim();
+            if (!text || text.length > 300) continue;
+            if (!choicesMap.has(text)) choicesMap.set(text, el);
+        }
+        const choices = [...choicesMap.keys()];
         if (index >= 0 && index < choices.length) {
             const targetText = choices[index];
-            const targetEl = seen.get(targetText);
-            log('Clicking choice ' + (index+1) + ': ' + targetText.substring(0,50));
+            const targetEl = choicesMap.get(targetText);
+            log(`Clicking choice ${index + 1}: ${targetText.substring(0, 50)}`);
             targetEl.click();
             return true;
         }
@@ -192,7 +269,6 @@
     function inputAnswer(ans) {
         ans = String(ans).trim();
         log('Attempting answer: ' + ans);
-        // Digit boxes
         const inputs = [...document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])')].filter(i => i.offsetParent !== null && !i.closest('#ixl-panel'));
         if (inputs.length > 0) {
             if (inputs.length === 1) {
@@ -226,6 +302,18 @@
         return false;
     }
 
+    async function getAIAnswer(q) {
+        return new Promise(resolve => {
+            GM_xmlhttpRequest({
+                method:'POST', url:'https://api.groq.com/openai/v1/chat/completions',
+                headers:{'Content-Type':'application/json','Authorization':'Bearer '+GROQ_API_KEY},
+                data:JSON.stringify({model:MODEL, messages:[{role:'system',content:'Answer with ONLY the final answer, preserving set notation if applicable.'},{role:'user',content:q}], temperature:0.1, max_tokens:150}),
+                onload: res => { try { const d=JSON.parse(res.responseText); resolve(d.choices[0].message.content.trim()); } catch(e){ resolve(null); } },
+                onerror: () => resolve(null)
+            });
+        });
+    }
+
     async function runLoop() {
         while (running) {
             const q = getQuestion();
@@ -240,12 +328,10 @@
             log('Question: ' + q.substring(0,80));
 
             let answered = false;
-            // Try basic math first
+            // 1. Basic math
             let ans = solveBasicMath(q);
-            if (ans) {
-                if (inputAnswer(ans)) { answered = true; }
-            }
-            // If not answered, try multiple choice via AI index
+            if (ans) answered = inputAnswer(ans);
+            // 2. Multiple choice via AI index
             if (!answered) {
                 const choices = getAnswerChoices();
                 if (choices.length > 0) {
@@ -253,16 +339,16 @@
                     const idx = await getAIChoiceIndex(q, choices);
                     if (idx >= 0) {
                         answered = clickChoiceByIndex(idx);
-                        if (answered) {
-                            setTimeout(clickSubmit, 300);
-                        }
+                        if (!answered) answered = clickByAnswerText(choices[idx]);
+                        if (answered) setTimeout(clickSubmit, 300);
                     }
                 }
-                // Fallback to text matching AI direct answer
+                // 3. Direct answer
                 if (!answered) {
                     ans = await getAIAnswer(q);
                     if (ans && ans !== 'SKIP') {
-                        answered = inputAnswer(ans);
+                        answered = clickByAnswerText(ans);
+                        if (!answered) answered = inputAnswer(ans);
                     }
                 }
             }
@@ -279,18 +365,6 @@
             }
         }
         log('Stopped.');
-    }
-
-    async function getAIAnswer(q) {
-        return new Promise(resolve => {
-            GM_xmlhttpRequest({
-                method:'POST', url:'https://api.groq.com/openai/v1/chat/completions',
-                headers:{'Content-Type':'application/json','Authorization':'Bearer '+GROQ_API_KEY},
-                data:JSON.stringify({model:MODEL, messages:[{role:'system',content:'Answer with ONLY the final answer, preserving set notation if applicable.'},{role:'user',content:q}], temperature:0.1, max_tokens:150}),
-                onload: res => { try { const d=JSON.parse(res.responseText); resolve(d.choices[0].message.content.trim()); } catch(e){ resolve(null); } },
-                onerror: () => resolve(null)
-            });
-        });
     }
 
     function updateUI() {
