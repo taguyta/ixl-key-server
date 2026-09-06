@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         IXL Auto Answerer (Server Key + Auto Update)
+// @name         IXL Auto Answerer (Loader + Server Key)
 // @namespace    http://tampermonkey.net/
-// @version      15.5
-// @description  Auto answer IXL with server-validated license key, draggable, auto-update, fixed next and digit alignment
+// @version      16.1
+// @description  Auto answer IXL with server-validated license key, simplified loader GUI, groq/compound model
 // @match        https://www.ixl.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -17,29 +17,86 @@
 (function() {
     'use strict';
 
+    // ========== HARDCODED CONFIG ==========
+    const GROQ_API_KEY = "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";
+    const DEFAULT_MODEL = "groq/compound";
     const SERVER_URL = "https://ixl-key-server.onrender.com";
     const SECRET = "IXL_CHEAT_SECRET_2024";
 
+    // ========== STATE ==========
     let autoAnswer = false;
-    let apiKey = GM_getValue('groq_api_key', '');
-    let model = GM_getValue('groq_model', '');
     let licenseKey = GM_getValue('license_key', '');
     let manualQuestionEl = null;
     let lastQuestionTextNormalized = '';
 
     const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-    const GROQ_MODELS_URL = 'https://api.groq.com/openai/v1/models';
 
+    // ========== STYLING ==========
     GM_addStyle(`
+        #ixl-loader {
+            position: fixed;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 999998;
+            background: #2c3e50;
+            color: #fff;
+            padding: 20px 30px;
+            border-radius: 10px;
+            font-family: Arial;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            width: 400px;
+            max-width: 90%;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            transition: all 0.5s ease;
+        }
+        #ixl-loader input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        #ixl-loader button {
+            padding: 10px 20px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+        }
         #ixl-cheat-panel {
-            position: fixed; top: 10px; right: 10px; z-index: 999999;
-            background: #2c3e50; color: #fff; padding: 0;
-            border-radius: 10px; font-family: Arial; width: 380px;
-            box-shadow: 0 0 20px rgba(0,0,0,0.5); overflow: hidden;
+            position: fixed;
+            top: 10px; right: 10px;
+            z-index: 999999;
+            background: #2c3e50;
+            color: #fff;
+            padding: 0;
+            border-radius: 10px;
+            font-family: Arial;
+            width: 380px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            overflow: hidden;
+            opacity: 0;
+            transform: scale(0.8);
+            transition: opacity 0.4s ease, transform 0.4s ease;
+            pointer-events: none;
+        }
+        #ixl-cheat-panel.show {
+            opacity: 1;
+            transform: scale(1);
+            pointer-events: auto;
         }
         #ixl-cheat-panel .drag-handle {
-            background: #1a252f; padding: 8px 15px; cursor: move;
-            user-select: none; display: flex; align-items: center; justify-content: space-between;
+            background: #1a252f;
+            padding: 8px 15px;
+            cursor: move;
+            user-select: none;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
         }
         #ixl-cheat-panel .drag-handle h3 { margin: 0; color: #3498db; }
         #ixl-cheat-panel .panel-content { padding: 15px; }
@@ -48,7 +105,6 @@
         .ixl-btn.stop { background: #e74c3c; }
         .ixl-row { margin: 8px 0; }
         .ixl-row label { display: inline-block; width: 110px; font-weight: bold; }
-        .ixl-row input, .ixl-row select { padding: 5px; border-radius: 3px; border: 1px solid #ccc; width: 180px; }
         #ixl-log { background: #34495e; padding: 8px; height: 180px; overflow-y: auto;
             font-size: 12px; margin-top: 10px; border-radius: 5px; white-space: pre-wrap; }
         #ixl-status { text-align: center; padding: 5px; border-radius: 3px;
@@ -56,6 +112,16 @@
         #ixl-status.on { background: #27ae60; }
     `);
 
+    // ========== LOADER ==========
+    const loader = document.createElement('div');
+    loader.id = 'ixl-loader';
+    loader.innerHTML = `
+        <input type="text" id="ixl-license-input" placeholder="Enter License Key">
+        <button id="ixl-activate">Activate</button>
+    `;
+    document.body.appendChild(loader);
+
+    // ========== MAIN PANEL ==========
     const panel = document.createElement('div');
     panel.id = 'ixl-cheat-panel';
     panel.innerHTML = `
@@ -63,23 +129,16 @@
         <div class="panel-content">
             <div id="ixl-status">Status: OFF</div>
             <div class="ixl-row"><button type="button" class="ixl-btn" id="ixl-toggle">Start</button></div>
-            <div class="ixl-row"><label>Groq API Key:</label><input type="password" id="ixl-apikey" placeholder="gsk_..."></div>
-            <div class="ixl-row"><button type="button" class="ixl-btn" id="ixl-refresh-models">Refresh Models</button></div>
-            <div class="ixl-row"><label>Model:</label><select id="ixl-model"><option value="">-- Select Model --</option></select></div>
-            <div class="ixl-row"><button type="button" class="ixl-btn" id="ixl-auto-model">Auto-Pick LLM</button></div>
-            <div class="ixl-row"><button type="button" class="ixl-btn" id="ixl-pick-question">Pick Question</button></div>
-            <div class="ixl-row"><button type="button" class="ixl-btn" id="ixl-test-question">Test Question Detection</button></div>
-            <div class="ixl-row"><label>License Key:</label><input type="text" id="ixl-license" placeholder="Paste key here"></div>
-            <div class="ixl-row"><button type="button" class="ixl-btn" id="ixl-save">Save Settings</button></div>
-            <div id="ixl-log">Ready. Enter license key, Groq key, refresh models, then Start.</div>
+            <div id="ixl-log">Ready. Click Start to begin.</div>
         </div>
     `;
     document.body.appendChild(panel);
 
-    if (apiKey) { document.getElementById('ixl-apikey').value = apiKey; log('Loaded Groq key.'); }
-    if (model) { document.getElementById('ixl-model').innerHTML = `<option value="${model}">${model}</option>`; }
-    if (licenseKey) { document.getElementById('ixl-license').value = licenseKey; log('Loaded license key.'); }
+    if (licenseKey) {
+        document.getElementById('ixl-license-input').value = licenseKey;
+    }
 
+    // Dragging
     const dragHandle = panel.querySelector('.drag-handle');
     let isDragging = false, startX, startY, initialX, initialY;
     dragHandle.addEventListener('mousedown', e => {
@@ -101,10 +160,6 @@
         d.textContent += '\n[' + new Date().toLocaleTimeString() + '] ' + msg;
         d.scrollTop = d.scrollHeight;
         console.log('[IXL Cheat] ' + msg);
-    }
-
-    function normalizeQuestion(text) {
-        return text.replace(/[,\s]+/g, '').toLowerCase();
     }
 
     async function validateLicenseKey(key, showAlert = false) {
@@ -134,6 +189,18 @@
             return false;
         }
     }
+
+    document.getElementById('ixl-activate').addEventListener('click', async function() {
+        const key = document.getElementById('ixl-license-input').value.trim();
+        if (await validateLicenseKey(key, true)) {
+            loader.style.opacity = '0';
+            setTimeout(() => {
+                loader.style.display = 'none';
+                panel.classList.add('show');
+                log('Panel activated. Welcome!');
+            }, 500);
+        }
+    });
 
     function getQuestionTextFromEl(el) {
         let text = el.innerText || el.textContent || '';
@@ -236,25 +303,15 @@
         const digits = absAnswer.replace(/,/g, '').replace(/[^0-9]/g, '');
         if (!digits) return false;
         const boxCount = digitBoxes.length;
-
-        // Right-align digits into boxes if fewer digits than boxes
         let digitStr = digits;
-        if (digits.length > boxCount) {
-            digitStr = digits.slice(-boxCount);
-        } else if (digits.length < boxCount) {
-            // Leave left boxes empty
-            digitStr = ' '.repeat(boxCount - digits.length) + digits; // Use spaces, not zeros
-        }
-
+        if (digits.length > boxCount) digitStr = digits.slice(-boxCount);
+        else if (digits.length < boxCount) digitStr = ' '.repeat(boxCount - digits.length) + digits;
         log(`Filling ${boxCount} boxes with: ${digitStr.trim()}`);
-
         for (let i = 0; i < boxCount; i++) {
-            const char = digitStr[i] === ' ' ? '' : digitStr[i];
-            digitBoxes[i].value = char;
+            digitBoxes[i].value = digitStr[i] === ' ' ? '' : digitStr[i];
             digitBoxes[i].dispatchEvent(new Event('input', { bubbles: true }));
             digitBoxes[i].dispatchEvent(new Event('change', { bubbles: true }));
         }
-
         setTimeout(() => clickSubmitButton(digitBoxes), 700);
         return true;
     }
@@ -323,9 +380,9 @@
             GM_xmlhttpRequest({
                 method: 'POST',
                 url: GROQ_URL,
-                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + GROQ_API_KEY },
                 data: JSON.stringify({
-                    model: model,
+                    model: DEFAULT_MODEL,
                     messages: [
                         { role: 'system', content: 'You are a math problem solver. Answer the following question with ONLY the final answer, no reasoning or chain-of-thought. Do not use any think tags. For math, output just the numerical answer (commas allowed). If multiple choice, output the exact choice text. If the question involves fractions, output the answer as a simplified fraction or whole number. Do not write any steps or explanations.' },
                         { role: 'user', content: question }
@@ -359,7 +416,7 @@
     async function runLoop() {
         while (autoAnswer && questionCount < 100 && errorCount < MAX_ERRORS) {
             if (questionCount % 30 === 0) {
-                const valid = await validateLicenseKey(document.getElementById('ixl-license').value.trim());
+                const valid = await validateLicenseKey(licenseKey, false);
                 if (!valid) { log('License no longer valid. Stopping.'); autoAnswer = false; updateUI(); break; }
             }
             if (isComplete()) { log('Skill complete!'); break; }
@@ -367,19 +424,12 @@
             const q = getQuestion();
             if (!q) { log('No question found. Waiting...'); await sleep(2000); continue; }
 
-            const normalizedQ = normalizeQuestion(q);
+            const normalizedQ = q.replace(/[,\s]+/g, '').toLowerCase();
             if (normalizedQ === lastQuestionTextNormalized) {
                 log('Same question detected, trying next button.');
-                if (clickNext()) {
-                    await sleep(2000);
-                    continue;
-                } else {
-                    log('Next button not found, waiting 3s...');
-                    await sleep(3000);
-                    continue;
-                }
+                if (clickNext()) { await sleep(2000); continue; }
+                else { log('Next button not found, waiting 3s...'); await sleep(3000); continue; }
             }
-
             lastQuestionTextNormalized = normalizedQ;
 
             try {
@@ -387,41 +437,26 @@
                 if (answer && answer !== 'SKIP') {
                     const answered = inputAnswer(answer);
                     if (answered) {
-                        questionCount++;
-                        log('Answered ' + questionCount);
-                        errorCount = 0;
-                        await sleep(2500); // longer wait for submit feedback
+                        questionCount++; log('Answered ' + questionCount); errorCount = 0;
+                        await sleep(2500);
                         if (!clickNext()) {
-                            log('Next button not clicked, will retry after 2s.');
+                            log('Next button not clicked, retrying after 2s.');
                             await sleep(2000);
-                            clickNext(); // second try
+                            clickNext();
                         }
-                    } else {
-                        log('Could not input answer. Skipping next.');
-                        await sleep(2000);
-                        clickNext();
-                    }
-                } else {
-                    log('AI returned empty/SKIP. Skipping next.');
-                    await sleep(2000);
-                    clickNext();
-                }
+                    } else { log('Could not input answer. Skipping next.'); await sleep(2000); clickNext(); }
+                } else { log('AI returned empty/SKIP. Skipping next.'); await sleep(2000); clickNext(); }
             } catch (err) {
                 errorCount++;
                 log('Error: ' + err.message);
-                if (err.message.includes('Rate limit')) {
-                    log('Rate limit hit, waiting 10s...');
-                    await sleep(10000);
-                } else {
-                    await sleep(2000);
-                }
+                if (err.message.includes('Rate limit')) { log('Rate limit hit, waiting 10s...'); await sleep(10000); }
+                else await sleep(2000);
                 if (errorCount >= MAX_ERRORS) { log('Too many errors, stopping.'); break; }
             }
             if (window.location.href !== currentUrl) {
                 log('WARNING: Page navigated to ' + window.location.href);
                 autoAnswer = false; updateUI(); break;
             }
-
             manualQuestionEl = null;
         }
         autoAnswer = false; updateUI(); log('Stopped.');
@@ -429,7 +464,8 @@
 
     function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
     function updateUI() {
-        const toggleBtn = document.getElementById('ixl-toggle'); const statusDiv = document.getElementById('ixl-status');
+        const toggleBtn = document.getElementById('ixl-toggle');
+        const statusDiv = document.getElementById('ixl-status');
         toggleBtn.textContent = autoAnswer ? 'Stop' : 'Start';
         toggleBtn.className = 'ixl-btn' + (autoAnswer ? ' stop' : '');
         statusDiv.textContent = 'Status: ' + (autoAnswer ? 'ON' : 'OFF');
@@ -437,90 +473,18 @@
     }
 
     document.getElementById('ixl-toggle').addEventListener('click', async function() {
-        const key = document.getElementById('ixl-license').value.trim();
-        if (!await validateLicenseKey(key, true)) return;
-        apiKey = document.getElementById('ixl-apikey').value.trim() || apiKey;
-        model = document.getElementById('ixl-model').value;
-        if (!apiKey) { alert('Enter Groq API key first.'); return; }
-        if (!model) { alert('Select a model first (use Refresh Models and Auto-Pick).'); return; }
-        autoAnswer = !autoAnswer; updateUI();
+        if (!licenseKey) { alert('License key not set.'); return; }
+        if (!await validateLicenseKey(licenseKey, true)) return;
+        autoAnswer = !autoAnswer;
+        updateUI();
         if (autoAnswer) {
             errorCount = 0;
             lastQuestionTextNormalized = '';
-            log('Started with model: ' + model);
+            log('Started with model: ' + DEFAULT_MODEL);
             runLoop();
         } else log('Stopped.');
     });
 
-    document.getElementById('ixl-refresh-models').addEventListener('click', refreshModels);
-    document.getElementById('ixl-auto-model').addEventListener('click', autoPickModel);
-    document.getElementById('ixl-pick-question').addEventListener('click', pickQuestion);
-    document.getElementById('ixl-test-question').addEventListener('click', function() {
-        const q = extractQuestionFromDOM();
-        if (q) alert('Detected question:\n\n' + q.substring(0, 200)); else alert('No question detected.');
-    });
-    document.getElementById('ixl-save').addEventListener('click', function() {
-        apiKey = document.getElementById('ixl-apikey').value.trim();
-        model = document.getElementById('ixl-model').value;
-        licenseKey = document.getElementById('ixl-license').value.trim();
-        GM_setValue('groq_api_key', apiKey);
-        GM_setValue('groq_model', model);
-        GM_setValue('license_key', licenseKey);
-        log('Settings saved.');
-    });
-
-    function refreshModels() {
-        const key = document.getElementById('ixl-apikey').value.trim();
-        if (!key) { alert('Enter Groq API key first.'); return; }
-        log('Fetching model list...');
-        GM_xmlhttpRequest({
-            method: 'GET', url: GROQ_MODELS_URL, headers: { 'Authorization': 'Bearer ' + key },
-            onload: function(response) {
-                try {
-                    const data = JSON.parse(response.responseText);
-                    if (data.error) { log('API Error: ' + data.error.message); return; }
-                    const models = data.data.map(m => m.id).sort();
-                    const select = document.getElementById('ixl-model');
-                    select.innerHTML = '<option value="">-- Select Model --</option>' + models.map(m => `<option value="${m}">${m}</option>`).join('');
-                    log(`Loaded ${models.length} models.`);
-                    const saved = GM_getValue('groq_model', '');
-                    if (saved && models.includes(saved)) select.value = saved;
-                } catch (e) { log('Parse error: ' + e.message); }
-            },
-            onerror: function() { log('Network error fetching model list'); }
-        });
-    }
-
-    function autoPickModel() {
-        const select = document.getElementById('ixl-model');
-        const options = [...select.options].filter(o => o.value);
-        const goodPattern = /(llama|qwen|deepseek|mixtral|gemma|mistral|instruct|chat|completion)/i;
-        const badPattern = /(prompt-guard|compound|allam|canopy|arabic|vision|embed|moderation|whisper|tts|audio|transcription|openai\/gpt-oss|qwen3\.6)/i;
-        const preferred = options.find(o => goodPattern.test(o.value) && !badPattern.test(o.value));
-        if (preferred) { select.value = preferred.value; log('Auto-picked: ' + preferred.value); }
-        else {
-            const fallback = options.find(o => !badPattern.test(o.value));
-            if (fallback) { select.value = fallback.value; log('Fallback: ' + fallback.value); }
-            else if (options.length) { select.value = options[0].value; log('Picked first: ' + options[0].value); }
-            else log('No models. Refresh first.');
-        }
-    }
-
-    let picking = false;
-    function pickQuestion() {
-        picking = true; log('Pick mode: click directly on the question text (not the panel).'); document.body.style.cursor = 'crosshair';
-        document.addEventListener('click', function handler(e) {
-            if (!picking) return;
-            e.preventDefault(); e.stopPropagation(); picking = false; document.body.style.cursor = '';
-            if (e.target.closest('#ixl-cheat-panel')) { log('Clicked on panel, ignored. Try again and click the question text.'); document.removeEventListener('click', handler); return; }
-            manualQuestionEl = e.target;
-            log('Selected element: ' + e.target.tagName + ' class=' + e.target.className);
-            const text = getQuestionTextFromEl(manualQuestionEl);
-            log('Extracted: ' + text.substring(0, 100));
-            document.removeEventListener('click', handler);
-        }, { once: true });
-    }
-
     updateUI();
-    log('Panel ready. Enter license key, Groq API key, refresh models, then Start.');
+    log('Panel ready. Enter license key, then Start.');
 })();
